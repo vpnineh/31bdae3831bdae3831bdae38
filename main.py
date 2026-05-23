@@ -6,6 +6,7 @@ import requests
 import socket
 import re
 import base64
+import threading
 from datetime import datetime, timezone
 from urllib.parse import urlparse, unquote, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -273,8 +274,84 @@ def get_raw_configs():
     return list(set([c.strip() for c in configs if c.strip()]))
 
 # ==========================================
-# 6. Main Engine & Publisher
+# 6. Main Engine & Parallel Publishers
 # ==========================================
+def publish_v2ray(v2ray_configs):
+    if not v2ray_configs:
+        return
+        
+    grouped_v2ray = {}
+    for c in v2ray_configs:
+        geo = c['geo']
+        group_key = f"{geo['code']}_{geo['isp']}"
+        if group_key not in grouped_v2ray:
+            grouped_v2ray[group_key] = []
+        grouped_v2ray[group_key].append(c)
+
+    for group_key, configs in grouped_v2ray.items():
+        chunk_size = 10
+        for i in range(0, len(configs), chunk_size):
+            chunk = configs[i:i+chunk_size]
+            geo = chunk[0]['geo']
+            
+            msg = f"📍 <b>Location:</b> {geo['flag']} {geo['loc']}\n\n" \
+                  f"🏢 <b>Datacenter:</b> {geo['isp']}\n\n" \
+                  f"🛡 #V2RAY\n\n"
+            
+            for c in chunk:
+                # استفاده از کوت رنگی و شیک با قابلیت کپی تکی
+                msg += f"<blockquote><code>{c['config']}</code></blockquote>\n\n"
+            
+            msg += f"📡 @zVPN24"
+            
+            while True:
+                try:
+                    bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
+                    print(f"  👉 Posted Grouped V2Ray [{geo['code']} - {geo['isp']}] ({len(chunk)} configs)")
+                    time.sleep(3.5)
+                    break
+                except ApiTelegramException as e:
+                    if e.error_code == 429:
+                        r = int(e.result_json['parameters']['retry_after'])
+                        print(f"  ⚠️ V2Ray Rate Limit! Sleep {r}s...")
+                        time.sleep(r + 1)
+                    else:
+                        print(f"  ❌ V2Ray Publish Error: {e}")
+                        break
+                except Exception as e:
+                    print(f"  ❌ General V2Ray Publish Error: {e}")
+                    break
+
+def publish_mtproto(mtproto_configs):
+    if not mtproto_configs:
+        return
+        
+    chunks = [mtproto_configs[i:i+4] for i in range(0, len(mtproto_configs), 4)]
+    
+    for idx, chunk in enumerate(chunks, 1):
+        markup = InlineKeyboardMarkup(row_width=2)
+        buttons = [InlineKeyboardButton(text=f"Connect {c['geo']['flag']}", url=c['config']) for c in chunk]
+        markup.add(*buttons)
+        
+        msg = "⚡️ <b>Fast & Active MTProto Proxies</b>\n\n👇 Click the buttons below to connect:\n\n🟢 @zProxy24"
+        while True:
+            try:
+                bot.send_message(CHANNEL_MTPROTO, msg, reply_markup=markup, parse_mode='HTML')
+                print(f"  👉 Posted MTProto Chunk [{idx}/{len(chunks)}]")
+                time.sleep(3.5)
+                break
+            except ApiTelegramException as e:
+                if e.error_code == 429:
+                    r = int(e.result_json['parameters']['retry_after'])
+                    print(f"  ⚠️ MTProto Rate Limit! Sleep {r}s...")
+                    time.sleep(r + 1)
+                else: 
+                    print(f"  ❌ MTProto Publish Error: {e}")
+                    break
+            except Exception as e:
+                print(f"  ❌ General MTProto Publish Error: {e}")
+                break
+
 def main():
     update_offline_geo_dbs()
     if not os.path.exists(COUNTRY_DB_FILE) or not os.path.exists(ASN_DB_FILE):
@@ -324,82 +401,23 @@ def main():
     if not active_results:
         return
         
-    print("🚀 Starting Telegram Publisher...")
+    print("🚀 Starting Parallel Telegram Publishers...")
 
-    # ==========================================
-    # 6.1 انتشار V2Ray (گروه‌بندی شده و باکس کدبلاک مجزا)
-    # ==========================================
     v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
-    
-    grouped_v2ray = {}
-    for c in v2ray_configs:
-        geo = c['geo']
-        group_key = f"{geo['code']}_{geo['isp']}"
-        if group_key not in grouped_v2ray:
-            grouped_v2ray[group_key] = []
-        grouped_v2ray[group_key].append(c)
-
-    for group_key, configs in grouped_v2ray.items():
-        chunk_size = 10
-        for i in range(0, len(configs), chunk_size):
-            chunk = configs[i:i+chunk_size]
-            geo = chunk[0]['geo']
-            
-            msg = f"📍 <b>Location:</b> {geo['flag']} {geo['loc']}\n" \
-                  f"🏢 <b>Datacenter:</b> {geo['isp']}\n" \
-                  f"🛡 #V2RAY\n\n"
-            
-            for c in chunk:
-                # استفاده از کوتِ شیک و ساده (بدون قابلیت جمع شدنِ expandable) با قابلیت کپی تکی
-                msg += f"<blockquote><code>{c['config']}</code></blockquote>\n\n"
-            
-            msg += f"📡 @zVPN24"
-            
-            while True:
-                try:
-                    bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
-                    print(f"  👉 Posted Grouped V2Ray [{geo['code']} - {geo['isp']}] ({len(chunk)} configs)")
-                    time.sleep(3.5)
-                    break
-                except ApiTelegramException as e:
-                    if e.error_code == 429:
-                        r = int(e.result_json['parameters']['retry_after'])
-                        print(f"  ⚠️ Rate Limit! Sleep {r}s...")
-                        time.sleep(r + 1)
-                    else:
-                        print(f"  ❌ V2Ray Publish Error: {e}")
-                        break
-                except Exception as e:
-                    print(f"  ❌ General Publish Error: {e}")
-                    break
-
-    # ==========================================
-    # 6.2 انتشار MTProto (دکمه شیشه‌ای)
-    # ==========================================
     mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
-    chunks = [mtproto_configs[i:i+4] for i in range(0, len(mtproto_configs), 4)]
-    
-    for idx, chunk in enumerate(chunks, 1):
-        markup = InlineKeyboardMarkup(row_width=2)
-        buttons = [InlineKeyboardButton(text=f"Connect {c['geo']['flag']}", url=c['config']) for c in chunk]
-        markup.add(*buttons)
-        
-        msg = "⚡️ <b>Fast & Active MTProto Proxies</b>\n\n👇 Click the buttons below to connect:\n\n🟢 @zProxy24"
-        while True:
-            try:
-                bot.send_message(CHANNEL_MTPROTO, msg, reply_markup=markup, parse_mode='HTML')
-                print(f"  👉 Posted MTProto Chunk [{idx}/{len(chunks)}]")
-                time.sleep(3.5)
-                break
-            except ApiTelegramException as e:
-                if e.error_code == 429:
-                    r = int(e.result_json['parameters']['retry_after'])
-                    print(f"  ⚠️ Rate Limit! Sleep {r}s...")
-                    time.sleep(r + 1)
-                else: break
-            except Exception: break
 
-    print("🎉 All operations completed successfully!")
+    # اجرای همزمان دو تابع انتشار در دو ترد (Thread) مجزا
+    t1 = threading.Thread(target=publish_v2ray, args=(v2ray_configs,))
+    t2 = threading.Thread(target=publish_mtproto, args=(mtproto_configs,))
+
+    t1.start()
+    t2.start()
+
+    # صبر کردن تا کار هر دو ترد تمام شود
+    t1.join()
+    t2.join()
+
+    print("🎉 All operations completed successfully in parallel!")
 
 if __name__ == "__main__":
     main()
