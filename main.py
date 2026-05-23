@@ -7,7 +7,7 @@ import socket
 import re
 import base64
 from datetime import datetime, timezone
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -151,6 +151,10 @@ def process_config(raw_config, reader_country, reader_asn):
             v_data = json.loads(decoded)
             ip, port = v_data.get("add"), v_data.get("port")
             
+            # استخراج Security برای vmess
+            security = v_data.get("tls") or "none"
+            if security == "": security = "none"
+            
             if ip and port and check_liveness(ip, port):
                 geo_info = get_location_info_offline(ip, reader_country, reader_asn)
                 if not geo_info: 
@@ -161,12 +165,16 @@ def process_config(raw_config, reader_country, reader_asn):
                 
                 new_b64 = base64.b64encode(json.dumps(v_data).encode('utf-8')).decode('utf-8')
                 final_config = f"vmess://{new_b64}"
-                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
+                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash, "security": security.upper()}
 
         elif any(config.startswith(p) for p in ["vless://", "trojan://", "ss://"]):
             config_type = "V2RAY"
             parsed = urlparse(config)
             ip, port = parsed.hostname, parsed.port
+            
+            # استخراج Security از Query String برای vless و trojan
+            query_params = parse_qs(parsed.query)
+            security = query_params.get("security", ["none"])[0]
             
             if ip and port and check_liveness(ip, port):
                 geo_info = get_location_info_offline(ip, reader_country, reader_asn)
@@ -177,7 +185,7 @@ def process_config(raw_config, reader_country, reader_asn):
                 remark = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 final_config = f"{base_uri}#{remark}"
                 
-                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
+                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash, "security": security.upper()}
 
         if ip and port and config_type == "MTPROTO" and check_liveness(ip, port):
             geo_info = get_location_info_offline(ip, reader_country, reader_asn)
@@ -284,7 +292,6 @@ def main():
     processed_count = 0
     
     with ThreadPoolExecutor(max_workers=100) as executor:
-        # ارسال readers به تردها (کتابخانه maxminddb از ThreadPool پشتیبانی می‌کند)
         futures = {executor.submit(process_config, conf, reader_country, reader_asn): conf for conf in new_configs}
         for future in as_completed(futures):
             processed_count += 1
@@ -308,14 +315,18 @@ def main():
     v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
     for idx, c in enumerate(v2ray_configs, 1):
         geo = c['geo']
-        msg = f"📍 **Location:** {geo['flag']} {geo['loc']}\n" \
-              f"🏢 **ISP:** {geo['isp']}\n" \
-              f"🛡 **Type:** {c['type']}\n" \
-              f"🌐 **IP:** `{c['ip']}`\n\n" \
-              f"`{c['config']}`\n\n" \
+        security = c.get('security', 'NONE') # دریافت نوع Security
+        
+        # ساختار جدید با استفاده از تگ‌های HTML (blockquote برای استایل عکس شما و code برای کپی سریع)
+        msg = f"📍 Location: {geo['flag']} {geo['loc']}\n" \
+              f"🏢 Datacenter: {geo['isp']}\n" \
+              f"🛡 Type: {c['type']}\n" \
+              f"🔒 Security: <code>{security}</code>\n\n" \
+              f"<blockquote><code>{c['config']}</code></blockquote>\n\n" \
               f"📡 @zVPN24"
         try:
-            bot.send_message(CHANNEL_V2RAY, msg, parse_mode='Markdown')
+            # اینجا parse_mode به HTML تغییر کرده است
+            bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
             print(f"  👉 Posted V2Ray [{idx}/{len(v2ray_configs)}]: {c['ip']}")
             time.sleep(1)
         except Exception as e:
@@ -330,11 +341,13 @@ def main():
         buttons = [InlineKeyboardButton(text=f"Connect {c['geo']['flag']}", url=c['config']) for c in chunk]
         markup.add(*buttons)
         
-        text_message = "⚡️ **Fast & Active MTProto Proxies**\n\n" \
+        # تبدیل بولد کردن به فرمت HTML
+        text_message = "⚡️ <b>Fast & Active MTProto Proxies</b>\n\n" \
                        "👇 Click the buttons below to connect:\n\n" \
                        f"🟢 @zProxy24"
         try:
-            bot.send_message(CHANNEL_MTPROTO, text_message, reply_markup=markup, parse_mode='Markdown')
+            # اینجا هم parse_mode به HTML تغییر کرده است
+            bot.send_message(CHANNEL_MTPROTO, text_message, reply_markup=markup, parse_mode='HTML')
             print(f"  👉 Posted MTProto Chunk [{idx}/{len(chunks)}]")
             time.sleep(1.5)
         except Exception as e:
