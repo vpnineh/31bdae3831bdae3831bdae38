@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import maxminddb  # کتابخانه رسمی برای خواندن دیتابیس‌های آفلاین Geo
+from telebot.apihelper import ApiTelegramException
 
 # ==========================================
 # 1. Configurations
@@ -311,28 +312,45 @@ def main():
     print(f"\n🎯 Total Active Configs: {len(active_results)}")
     print("🚀 Starting Telegram Publisher...")
 
+    # ==========================
     # انتشار V2Ray
+    # ==========================
     v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
     for idx, c in enumerate(v2ray_configs, 1):
         geo = c['geo']
-        security = c.get('security', 'NONE') # دریافت نوع Security
+        security = c.get('security', 'NONE')
         
-        # ساختار جدید با استفاده از تگ‌های HTML (blockquote برای استایل عکس شما و code برای کپی سریع)
-        msg = f"📍 Location: {geo['flag']} {geo['loc']}\n" \
-              f"🏢 Datacenter: {geo['isp']}\n" \
-              f"🛡 Type: {c['type']}\n" \
-              f"🔒 Security: <code>{security}</code>\n\n" \
+        # تغییرات ظاهری: Type رفت خط اول، متن‌ها بولد شدند تا از هم تفکیک بشن
+        msg = f"🛡 <b>Type:</b> #{c['type']}\n" \
+              f"📍 <b>Location:</b> {geo['flag']} {geo['loc']}\n" \
+              f"🏢 <b>Datacenter:</b> {geo['isp']}\n" \
+              f"🔒 <b>Security:</b> {security}\n\n" \
               f"<blockquote><code>{c['config']}</code></blockquote>\n\n" \
               f"📡 @zVPN24"
-        try:
-            # اینجا parse_mode به HTML تغییر کرده است
-            bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
-            print(f"  👉 Posted V2Ray [{idx}/{len(v2ray_configs)}]: {c['ip']}")
-            time.sleep(1)
-        except Exception as e:
-            print(f"  ❌ V2Ray Publish Error: {e}")
+              
+        # سیستم هوشمند دور زدن لیمیت تلگرام
+        while True:
+            try:
+                bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
+                print(f"  👉 Posted V2Ray [{idx}/{len(v2ray_configs)}]: {c['ip']}")
+                time.sleep(3.5) # افزایش زمان استراحت به 3.5 ثانیه (استاندارد تلگرام)
+                break # خروج از حلقه while در صورت موفقیت
+                
+            except ApiTelegramException as e:
+                if e.error_code == 429:
+                    retry_after = int(e.result_json['parameters']['retry_after'])
+                    print(f"  ⚠️ Telegram Rate Limit! Sleeping for {retry_after} seconds...")
+                    time.sleep(retry_after + 1) # صبر کردن به مقدار درخواستی تلگرام
+                else:
+                    print(f"  ❌ V2Ray Publish Error: {e}")
+                    break
+            except Exception as e:
+                print(f"  ❌ General Publish Error: {e}")
+                break
 
+    # ==========================
     # انتشار MTProto
+    # ==========================
     mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
     chunks = [mtproto_configs[i:i+4] for i in range(0, len(mtproto_configs), 4)]
     
@@ -341,17 +359,28 @@ def main():
         buttons = [InlineKeyboardButton(text=f"Connect {c['geo']['flag']}", url=c['config']) for c in chunk]
         markup.add(*buttons)
         
-        # تبدیل بولد کردن به فرمت HTML
         text_message = "⚡️ <b>Fast & Active MTProto Proxies</b>\n\n" \
                        "👇 Click the buttons below to connect:\n\n" \
                        f"🟢 @zProxy24"
-        try:
-            # اینجا هم parse_mode به HTML تغییر کرده است
-            bot.send_message(CHANNEL_MTPROTO, text_message, reply_markup=markup, parse_mode='HTML')
-            print(f"  👉 Posted MTProto Chunk [{idx}/{len(chunks)}]")
-            time.sleep(1.5)
-        except Exception as e:
-            print(f"  ❌ MTProto Publish Error: {e}")
+                       
+        while True:
+            try:
+                bot.send_message(CHANNEL_MTPROTO, text_message, reply_markup=markup, parse_mode='HTML')
+                print(f"  👉 Posted MTProto Chunk [{idx}/{len(chunks)}]")
+                time.sleep(3.5)
+                break
+                
+            except ApiTelegramException as e:
+                if e.error_code == 429:
+                    retry_after = int(e.result_json['parameters']['retry_after'])
+                    print(f"  ⚠️ Telegram Rate Limit! Sleeping for {retry_after} seconds...")
+                    time.sleep(retry_after + 1)
+                else:
+                    print(f"  ❌ MTProto Publish Error: {e}")
+                    break
+            except Exception as e:
+                print(f"  ❌ General Publish Error: {e}")
+                break
 
     print("🎉 All operations completed successfully!")
 
