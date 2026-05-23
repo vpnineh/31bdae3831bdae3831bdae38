@@ -1,6 +1,6 @@
 https://raw.githubusercontent.com/10ium/V2RayAggregator/refs/heads/master/Eternity.txt
-#https://github.com/4n0nymou3/multi-proxy-config-fetcher/raw/refs/heads/main/configs/proxy_configs_tested.txt
-#https://raw.githubusercontent.com/Pawdroid/Free-servers/refs/heads/main/sub
+https://github.com/4n0nymou3/multi-proxy-config-fetcher/raw/refs/heads/main/configs/proxy_configs_tested.txt
+https://raw.githubusercontent.com/Pawdroid/Free-servers/refs/heads/main/sub
 https://raw.githubusercontent.com/go4sharing/sub/main/sub.yaml
 @v2rayng_org
 @V2rayNG_Mats
