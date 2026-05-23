@@ -11,7 +11,7 @@ from urllib.parse import urlparse, unquote, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import maxminddb  # کتابخانه رسمی برای خواندن دیتابیس‌های آفلاین Geo
+import maxminddb  
 from telebot.apihelper import ApiTelegramException
 
 # ==========================================
@@ -20,7 +20,7 @@ from telebot.apihelper import ApiTelegramException
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_V2RAY = '@zVPN24'
 CHANNEL_MTPROTO = '@zProxy24'
-CUSTOM_REMARK_V2RAY = '⚙️@zVPN24'
+CUSTOM_REMARK_V2RAY = '🚀@zVPN24'
 
 if not BOT_TOKEN:
     print("❌ BOT_TOKEN is missing! Please set it in GitHub Secrets.")
@@ -28,47 +28,73 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# فایل‌ها
-HISTORY_FILE = 'history.json'
+# فایل‌ها (هیستوری به txt تغییر کرد برای سرعت فوق‌العاده)
+HISTORY_FILE = 'history.txt'
 SOURCES_FILE = 'sources.txt'
 
-# دیتابیس‌های آفلاین
 COUNTRY_DB_FILE = 'GeoLite2-Country.mmdb'
 ASN_DB_FILE = 'GeoLite2-ASN.mmdb'
-# لینک‌های دیتابیس رایگان و آپدیت‌شده گیت‌هاب (PrxyHunter)
 COUNTRY_DB_URL = 'https://github.com/PrxyHunter/GeoLite2/releases/latest/download/GeoLite2-Country.mmdb'
 ASN_DB_URL = 'https://github.com/PrxyHunter/GeoLite2/releases/latest/download/GeoLite2-ASN.mmdb'
 
 # ==========================================
-# 2. File & Database Management
+# 2. Advanced Deep Hash & History Management
 # ==========================================
-def load_json(filepath):
+def load_history(filepath):
+    """بارگذاری 40 هزار هش در یک Set برای جستجوی صفر ثانیه‌ای"""
     if os.path.exists(filepath):
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return set(line.strip() for line in f if line.strip())
+    return set()
 
-def save_json(filepath, data):
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def append_to_history(filepath, new_hashes):
+    """اضافه کردن هش‌های جدید به انتهای فایل (بسیار سریع‌تر از ذخیره مجدد کل فایل)"""
+    if not new_hashes: return
+    with open(filepath, 'a', encoding='utf-8') as f:
+        for h in new_hashes:
+            f.write(h + '\n')
 
-def get_lines_from_file(filepath):
-    if not os.path.exists(filepath):
-        return []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+def get_deep_hash(config):
+    """
+    استخراج هویت اصلی سرور: ریمارک‌ها و پارامترهای اضافی حذف می‌شوند
+    و هش فقط بر اساس (IP + Port + Password/UUID) ساخته می‌شود.
+    """
+    config = config.strip()
+    try:
+        if config.startswith("vmess://"):
+            b64_str = config.replace("vmess://", "")
+            decoded = base64.b64decode(s=b64_str + '=' * (4 - len(b64_str) % 4)).decode('utf-8')
+            v_data = json.loads(decoded)
+            # هسته Vmess: آی‌پی + پورت + آیدی
+            core_str = f"vmess|{v_data.get('add')}:{v_data.get('port')}|{v_data.get('id')}"
+            return hashlib.sha256(core_str.encode()).hexdigest()
+            
+        elif any(config.startswith(p) for p in ["vless://", "trojan://", "ss://"]):
+            parsed = urlparse(config)
+            # هسته Vless/Trojan: پروتکل + آی‌پی + پورت + یوزرنیم (همان UUID یا پسورد)
+            core_str = f"{parsed.scheme}|{parsed.hostname}:{parsed.port}|{parsed.username}"
+            return hashlib.sha256(core_str.encode()).hexdigest()
+            
+        elif config.startswith("tg://proxy"):
+            ip_m = re.search(r'server=([^&]+)', config)
+            port_m = re.search(r'port=(\d+)', config)
+            sec_m = re.search(r'secret=([^&]+)', config)
+            if ip_m and port_m and sec_m:
+                # هسته پروکسی: آی‌پی + پورت + سکرت
+                core_str = f"mtproto|{ip_m.group(1)}:{port_m.group(1)}|{sec_m.group(1)}"
+                return hashlib.sha256(core_str.encode()).hexdigest()
+    except:
+        pass
+    
+    # اگر فرمت ناشناخته بود، کل رشته را هش کن
+    return hashlib.sha256(config.encode('utf-8')).hexdigest()
 
-def generate_hash(text):
-    return hashlib.sha256(text.encode('utf-8')).hexdigest()
-
+# ==========================================
+# 3. Offline Geo-Location Functions
+# ==========================================
 def update_offline_geo_dbs():
-    """دانلود دیتابیس‌های آفلاین در صورتی که وجود ندارند یا بیشتر از 10 روز از عمرشان گذشته است."""
     ten_days = 10 * 24 * 60 * 60
     now = time.time()
-    
     for url, filepath in [(COUNTRY_DB_URL, COUNTRY_DB_FILE), (ASN_DB_URL, ASN_DB_FILE)]:
         needs_download = False
         if not os.path.exists(filepath):
@@ -77,20 +103,16 @@ def update_offline_geo_dbs():
             needs_download = True
             
         if needs_download:
-            print(f"📥 Downloading/Updating offline GeoDB: {filepath}...")
+            print(f"📥 Downloading offline GeoDB: {filepath}...")
             try:
                 r = requests.get(url, stream=True, timeout=30)
                 if r.status_code == 200:
                     with open(filepath, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=1024*1024):
                             f.write(chunk)
-                    print(f"✅ {filepath} updated successfully.")
             except Exception as e:
                 print(f"❌ Failed to download {filepath}: {e}")
 
-# ==========================================
-# 3. Network & Offline Geo-Location Functions
-# ==========================================
 def check_liveness(ip, port, timeout=1.5):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -102,12 +124,10 @@ def check_liveness(ip, port, timeout=1.5):
         return False
 
 def get_location_info_offline(ip, reader_country, reader_asn):
-    """استخراج کشور و دیتاسنتر در کسری از میلی‌ثانیه بدون نیاز به اینترنت"""
     try:
         country_data = reader_country.get(ip)
         asn_data = reader_asn.get(ip)
         
-        # اگر کشور پیدا نشد، کلا کانفیگ رو رد کن
         if country_data and 'country' in country_data and 'iso_code' in country_data['country']:
             code = country_data['country']['iso_code']
             loc = country_data['country']['names'].get('en', code)
@@ -115,7 +135,6 @@ def get_location_info_offline(ip, reader_country, reader_asn):
         else:
             return None 
 
-        # استخراج دیتاسنتر (ASN)
         isp = "Unknown ISP"
         if asn_data and 'autonomous_system_organization' in asn_data:
             isp = asn_data['autonomous_system_organization'].replace('_', ' ').replace('*', '').replace('`', '')
@@ -132,7 +151,7 @@ def fix_base64(s):
 # ==========================================
 def process_config(raw_config, reader_country, reader_asn):
     config = raw_config.strip()
-    config_hash = generate_hash(config)
+    config_hash = get_deep_hash(config) # استفاده از هش عمیق
     ip = port = None
     config_type = "UNKNOWN"
     final_config = config
@@ -152,18 +171,14 @@ def process_config(raw_config, reader_country, reader_asn):
             v_data = json.loads(decoded)
             ip, port = v_data.get("add"), v_data.get("port")
             
-            # استخراج Security برای vmess
             security = v_data.get("tls") or "none"
             if security == "": security = "none"
             
             if ip and port and check_liveness(ip, port):
                 geo_info = get_location_info_offline(ip, reader_country, reader_asn)
-                if not geo_info: 
-                    return None
+                if not geo_info: return None
                     
-                remark = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
-                v_data['ps'] = remark
-                
+                v_data['ps'] = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 new_b64 = base64.b64encode(json.dumps(v_data).encode('utf-8')).decode('utf-8')
                 final_config = f"vmess://{new_b64}"
                 return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash, "security": security.upper()}
@@ -173,34 +188,28 @@ def process_config(raw_config, reader_country, reader_asn):
             parsed = urlparse(config)
             ip, port = parsed.hostname, parsed.port
             
-            # استخراج Security از Query String برای vless و trojan
             query_params = parse_qs(parsed.query)
             security = query_params.get("security", ["none"])[0]
             
             if ip and port and check_liveness(ip, port):
                 geo_info = get_location_info_offline(ip, reader_country, reader_asn)
-                if not geo_info: 
-                    return None
+                if not geo_info: return None
                     
                 base_uri = config.split('#')[0]
-                remark = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
-                final_config = f"{base_uri}#{remark}"
-                
+                final_config = f"{base_uri}#{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash, "security": security.upper()}
 
         if ip and port and config_type == "MTPROTO" and check_liveness(ip, port):
             geo_info = get_location_info_offline(ip, reader_country, reader_asn)
-            if not geo_info:
-                return None
+            if not geo_info: return None
             return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
             
     except Exception:
         pass
-        
     return None
 
 # ==========================================
-# 5. Scrapers (Sources & YAML Converter)
+# 5. Scrapers
 # ==========================================
 def convert_yaml_sub(link):
     apis = [
@@ -221,16 +230,15 @@ def convert_yaml_sub(link):
 
 def get_raw_configs():
     configs = []
-    raw_sources = get_lines_from_file(SOURCES_FILE)
-    subs = []
-    channels = []
-    
-    for s in raw_sources:
-        if s.startswith('http') and 't.me' not in s:
-            subs.append(s)
-        else:
-            ch = s.replace('https://t.me/s/', '').replace('https://t.me/', '').replace('@', '').strip()
-            channels.append(ch)
+    if not os.path.exists(SOURCES_FILE):
+        print(f"❌ '{SOURCES_FILE}' not found!")
+        return []
+        
+    with open(SOURCES_FILE, 'r', encoding='utf-8') as f:
+        raw_sources = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        
+    subs = [s for s in raw_sources if s.startswith('http') and 't.me' not in s]
+    channels = [s.replace('https://t.me/s/', '').replace('https://t.me/', '').replace('@', '').strip() for s in raw_sources if not (s.startswith('http') and 't.me' not in s)]
             
     for link in subs:
         try:
@@ -257,39 +265,47 @@ def get_raw_configs():
             r = requests.get(f"https://t.me/s/{channel}", headers=headers, timeout=10)
             if r.status_code == 200:
                 html = unquote(r.text)
-                messages = html.split('tgme_widget_message js-widget_message')
-                for msg in messages:
+                for msg in html.split('tgme_widget_message js-widget_message'):
                     if f'datetime="{today_str}' in msg:
-                        found = re.findall(r'(vless://[^\s<"]+|vmess://[^\s<"]+|trojan://[^\s<"]+|ss://[^\s<"]+|tg://proxy\?[^\s<"]+)', msg)
-                        configs.extend(found)
+                        configs.extend(re.findall(r'(vless://[^\s<"]+|vmess://[^\s<"]+|trojan://[^\s<"]+|ss://[^\s<"]+|tg://proxy\?[^\s<"]+)', msg))
         except:
             continue
             
     return list(set([c.strip() for c in configs if c.strip()]))
 
 # ==========================================
-# 6. Main Execution & Telegram Publisher
+# 6. Main Engine
 # ==========================================
 def main():
-    # 1. آپدیت و راه‌اندازی دیتابیس آفلاین GeoIP
     update_offline_geo_dbs()
-    
     if not os.path.exists(COUNTRY_DB_FILE) or not os.path.exists(ASN_DB_FILE):
-        print("❌ Critical: Offline Geo databases are missing! Exiting...")
+        print("❌ Critical: Offline Geo databases missing!")
         exit(1)
         
     reader_country = maxminddb.open_database(COUNTRY_DB_FILE)
     reader_asn = maxminddb.open_database(ASN_DB_FILE)
 
-    history = load_json(HISTORY_FILE)
+    # بارگیری سریع هیستوری در یک Set
+    history = load_history(HISTORY_FILE)
+    print(f"📚 Loaded {len(history)} hashes from deep history.")
+    
     print("🔄 Scraping sources...")
     raw_configs = get_raw_configs()
     
-    new_configs = [c for c in raw_configs if generate_hash(c) not in history]
+    # فیلتر عمیق: فقط کانفیگ‌هایی که هویت آن‌ها در تاریخچه نیست وارد می‌شوند
+    new_configs = []
+    for c in raw_configs:
+        h = get_deep_hash(c)
+        if h not in history:
+            new_configs.append(c)
+            # هش را موقتا در مموری اضافه می‌کنیم تا در یک ران هم تکراری نگیرد
+            history.add(h) 
+            
     total_new = len(new_configs)
-    print(f"📊 Found {total_new} new unique configs. Running Liveness test...")
+    print(f"📊 Found {total_new} deeply unique configs. Testing...")
     
     active_results = []
+    new_active_hashes = []
     processed_count = 0
     
     with ThreadPoolExecutor(max_workers=100) as executor:
@@ -297,30 +313,29 @@ def main():
         for future in as_completed(futures):
             processed_count += 1
             res = future.result()
-            
             if res:
                 active_results.append(res)
-                history[res['hash']] = time.time()
+                new_active_hashes.append(res['hash']) # نگه داشتن هش‌های جدید برای فایل
                 print(f"[{processed_count}/{total_new}] ✅ Active: {res['ip']} ({res['geo']['code']} - {res['geo']['isp']})")
             elif processed_count % 10 == 0 or processed_count == total_new:
                 print(f"[{processed_count}/{total_new}] ⏳ Processing...")
 
-    save_json(HISTORY_FILE, history)
+    # فقط هش سرورهای فعال جدید به فایل اضافه می‌شود
+    append_to_history(HISTORY_FILE, new_active_hashes)
     reader_country.close()
     reader_asn.close()
     
     print(f"\n🎯 Total Active Configs: {len(active_results)}")
+    if not active_results:
+        return
+        
     print("🚀 Starting Telegram Publisher...")
 
-    # ==========================
-    # انتشار V2Ray
-    # ==========================
     v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
     for idx, c in enumerate(v2ray_configs, 1):
         geo = c['geo']
         security = c.get('security', 'NONE')
         
-        # تغییرات ظاهری: Type رفت خط اول، متن‌ها بولد شدند تا از هم تفکیک بشن
         msg = f"🛡 <b>Type:</b> #{c['type']}\n" \
               f"📍 <b>Location:</b> {geo['flag']} {geo['loc']}\n" \
               f"🏢 <b>Datacenter:</b> {geo['isp']}\n" \
@@ -328,29 +343,20 @@ def main():
               f"<blockquote><code>{c['config']}</code></blockquote>\n\n" \
               f"📡 @zVPN24"
               
-        # سیستم هوشمند دور زدن لیمیت تلگرام
         while True:
             try:
                 bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
-                print(f"  👉 Posted V2Ray [{idx}/{len(v2ray_configs)}]: {c['ip']}")
-                time.sleep(3.5) # افزایش زمان استراحت به 3.5 ثانیه (استاندارد تلگرام)
-                break # خروج از حلقه while در صورت موفقیت
-                
+                print(f"  👉 Posted V2Ray [{idx}/{len(v2ray_configs)}]")
+                time.sleep(3.5)
+                break
             except ApiTelegramException as e:
                 if e.error_code == 429:
-                    retry_after = int(e.result_json['parameters']['retry_after'])
-                    print(f"  ⚠️ Telegram Rate Limit! Sleeping for {retry_after} seconds...")
-                    time.sleep(retry_after + 1) # صبر کردن به مقدار درخواستی تلگرام
-                else:
-                    print(f"  ❌ V2Ray Publish Error: {e}")
-                    break
-            except Exception as e:
-                print(f"  ❌ General Publish Error: {e}")
-                break
+                    r = int(e.result_json['parameters']['retry_after'])
+                    print(f"  ⚠️ Rate Limit! Sleep {r}s...")
+                    time.sleep(r + 1)
+                else: break
+            except Exception: break
 
-    # ==========================
-    # انتشار MTProto
-    # ==========================
     mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
     chunks = [mtproto_configs[i:i+4] for i in range(0, len(mtproto_configs), 4)]
     
@@ -359,28 +365,20 @@ def main():
         buttons = [InlineKeyboardButton(text=f"Connect {c['geo']['flag']}", url=c['config']) for c in chunk]
         markup.add(*buttons)
         
-        text_message = "⚡️ <b>Fast & Active MTProto Proxies</b>\n\n" \
-                       "👇 Click the buttons below to connect:\n\n" \
-                       f"🟢 @zProxy24"
-                       
+        msg = "⚡️ <b>Fast & Active MTProto Proxies</b>\n\n👇 Click the buttons below to connect:\n\n🟢 @zProxy24"
         while True:
             try:
-                bot.send_message(CHANNEL_MTPROTO, text_message, reply_markup=markup, parse_mode='HTML')
+                bot.send_message(CHANNEL_MTPROTO, msg, reply_markup=markup, parse_mode='HTML')
                 print(f"  👉 Posted MTProto Chunk [{idx}/{len(chunks)}]")
                 time.sleep(3.5)
                 break
-                
             except ApiTelegramException as e:
                 if e.error_code == 429:
-                    retry_after = int(e.result_json['parameters']['retry_after'])
-                    print(f"  ⚠️ Telegram Rate Limit! Sleeping for {retry_after} seconds...")
-                    time.sleep(retry_after + 1)
-                else:
-                    print(f"  ❌ MTProto Publish Error: {e}")
-                    break
-            except Exception as e:
-                print(f"  ❌ General Publish Error: {e}")
-                break
+                    r = int(e.result_json['parameters']['retry_after'])
+                    print(f"  ⚠️ Rate Limit! Sleep {r}s...")
+                    time.sleep(r + 1)
+                else: break
+            except Exception: break
 
     print("🎉 All operations completed successfully!")
 
