@@ -2,8 +2,8 @@ name: zVPN24 & zProxy24 Auto Fetcher
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 */3 * * *'
+  # schedule:
+  #   - cron: '7,22,37,52 * * * *'
 
 # ==========================================
 # بخش جدید: جلوگیری از اجرای همزمان و تداخل
