@@ -42,14 +42,12 @@ ASN_DB_URL = 'https://github.com/PrxyHunter/GeoLite2/releases/latest/download/Ge
 # 2. Advanced Deep Hash & History Management
 # ==========================================
 def load_history(filepath):
-    """بارگذاری هش‌ها در یک Set برای جستجوی فوق‌سریع"""
     if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             return set(line.strip() for line in f if line.strip())
     return set()
 
 def append_to_history(filepath, new_hashes, max_lines=40000):
-    """مدیریت هوشمند دیتابیس تاریخچه با سقف 40 هزار خط"""
     if not new_hashes: return
     
     existing = []
@@ -67,7 +65,6 @@ def append_to_history(filepath, new_hashes, max_lines=40000):
             f.write(h + '\n')
 
 def get_deep_hash(config):
-    """استخراج هسته اصلی کانفیگ برای جلوگیری از انتشار تکراری‌های تغییر نام یافته"""
     config = config.strip()
     try:
         if config.startswith("vmess://"):
@@ -82,13 +79,21 @@ def get_deep_hash(config):
             core_str = f"{parsed.scheme}|{parsed.hostname}:{parsed.port}|{parsed.username}"
             return hashlib.sha256(core_str.encode()).hexdigest()
             
-        elif config.startswith("tg://proxy"):
-            ip_m = re.search(r'server=([^&]+)', config)
-            port_m = re.search(r'port=(\d+)', config)
-            sec_m = re.search(r'secret=([^&]+)', config)
-            if ip_m and port_m and sec_m:
-                core_str = f"mtproto|{ip_m.group(1)}:{port_m.group(1)}|{sec_m.group(1)}"
-                return hashlib.sha256(core_str.encode()).hexdigest()
+        # هش‌سازی قدرتمند برای انواع پروکسی‌های تلگرامی و ساکس
+        elif config.startswith("tg://") or config.startswith("https://t.me/"):
+            query_str = config.split('?')[1] if '?' in config else ""
+            query_params = parse_qs(query_str)
+            srv = query_params.get("server", [""])[0]
+            prt = query_params.get("port", [""])[0]
+            sec = query_params.get("secret", [""])[0]
+            usr = query_params.get("user", [""])[0]
+            core_str = f"tg_proxy|{srv}:{prt}|{sec}{usr}"
+            return hashlib.sha256(core_str.encode()).hexdigest()
+            
+        elif config.startswith("socks5://"):
+            parsed = urlparse(config)
+            core_str = f"socks5|{parsed.hostname}:{parsed.port}|{parsed.username or ''}"
+            return hashlib.sha256(core_str.encode()).hexdigest()
     except:
         pass
     
@@ -143,7 +148,7 @@ def get_location_info_offline(ip, reader_country, reader_asn):
         if asn_data and 'autonomous_system_organization' in asn_data:
             isp = asn_data['autonomous_system_organization'].replace('_', ' ').replace('*', '').replace('`', '')
         else:
-            return None # فیلتر سخت‌گیرانه دیتاسنتر
+            return None 
 
         return {'loc': loc, 'flag': flag, 'code': code, 'isp': isp}
     except:
@@ -163,13 +168,46 @@ def process_config(raw_config, reader_country, reader_asn):
     final_config = config
 
     try:
-        if config.startswith("tg://proxy"):
-            config_type = "MTPROTO"
-            ip_match = re.search(r'server=([^&]+)', config)
-            port_match = re.search(r'port=(\d+)', config)
-            if ip_match and port_match:
-                ip, port = ip_match.group(1), port_match.group(1)
+        # بررسی و تبدیل هوشمندِ پروکسی‌های تلگرام (MTProto و SOCKS)
+        if config.startswith("tg://") or config.startswith("https://t.me/"):
+            query_str = config.split('?')[1] if '?' in config else ""
+            query_params = parse_qs(query_str)
+            
+            srv = query_params.get("server", [None])[0]
+            prt = query_params.get("port", [None])[0]
+            
+            if srv and prt and prt.isdigit() and 1 <= int(prt) <= 65535:
+                ip, port = srv, int(prt)
+                config_type = "MTPROTO"
+                
+                # استانداردسازی به لینک t.me برای عملکرد صحیح دکمه شیشه‌ای
+                if "proxy" in config:
+                    sec = query_params.get("secret", [""])[0]
+                    final_config = f"https://t.me/proxy?server={ip}&port={port}&secret={sec}"
+                else:
+                    usr = query_params.get("user", [""])[0]
+                    pwd = query_params.get("pass", [""])[0]
+                    final_config = f"https://t.me/socks?server={ip}&port={port}"
+                    if usr: final_config += f"&user={usr}"
+                    if pwd: final_config += f"&pass={pwd}"
+            else:
+                return None
 
+        # تبدیل لینک‌های خام socks5 به پروکسی تلگرام
+        elif config.startswith("socks5://"):
+            parsed = urlparse(config)
+            ip, port = parsed.hostname, parsed.port
+            if ip and port and isinstance(port, int) and 1 <= port <= 65535:
+                config_type = "MTPROTO"
+                usr = parsed.username
+                pwd = parsed.password
+                final_config = f"https://t.me/socks?server={ip}&port={port}"
+                if usr: final_config += f"&user={usr}"
+                if pwd: final_config += f"&pass={pwd}"
+            else:
+                return None
+
+        # بررسی خانواده V2Ray
         elif config.startswith("vmess://"):
             config_type = "V2RAY"
             b64_str = config.replace("vmess://", "")
@@ -199,6 +237,7 @@ def process_config(raw_config, reader_country, reader_asn):
                 final_config = f"{base_uri}#{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
 
+        # تست نهایی لایونس (پینگ) برای پروکسی‌های تلگرامی
         if ip and port and config_type == "MTPROTO" and check_liveness(ip, port):
             geo_info = get_location_info_offline(ip, reader_country, reader_asn)
             if not geo_info: return None
@@ -260,6 +299,7 @@ def get_raw_configs():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
+    # جستجوی تمام الگوها شامل پروکسی‌های تلگرامی و ساکس
     for channel in channels:
         try:
             r = requests.get(f"https://t.me/s/{channel}", headers=headers, timeout=10)
@@ -267,7 +307,7 @@ def get_raw_configs():
                 html = unquote(r.text)
                 for msg in html.split('tgme_widget_message js-widget_message'):
                     if f'datetime="{today_str}' in msg:
-                        configs.extend(re.findall(r'(vless://[^\s<"]+|vmess://[^\s<"]+|trojan://[^\s<"]+|ss://[^\s<"]+|tg://proxy\?[^\s<"]+)', msg))
+                        configs.extend(re.findall(r'(vless://[^\s<"]+|vmess://[^\s<"]+|trojan://[^\s<"]+|ss://[^\s<"]+|socks5://[^\s<"]+|tg://proxy\?[^\s<"]+|https://t\.me/proxy\?[^\s<"]+|https://t\.me/socks\?[^\s<"]+|tg://socks\?[^\s<"]+)', msg))
         except:
             continue
             
@@ -299,7 +339,6 @@ def publish_v2ray(v2ray_configs):
                   f"🛡 #V2RAY\n\n"
             
             for c in chunk:
-                # استفاده از کوت رنگی و شیک با قابلیت کپی تکی
                 msg += f"<blockquote><code>{c['config']}</code></blockquote>\n\n"
             
             msg += f"📡 @zVPN24"
@@ -333,11 +372,11 @@ def publish_mtproto(mtproto_configs):
         buttons = [InlineKeyboardButton(text=f"Connect {c['geo']['flag']}", url=c['config']) for c in chunk]
         markup.add(*buttons)
         
-        msg = "⚡️ <b>Fast & Active MTProto Proxies</b>\n\n👇 Click the buttons below to connect:\n\n🟢 @zProxy24"
+        msg = "⚡️ <b>Fast & Active Telegram Proxies</b>\n\n👇 Click the buttons below to connect:\n\n🟢 @zProxy24"
         while True:
             try:
                 bot.send_message(CHANNEL_MTPROTO, msg, reply_markup=markup, parse_mode='HTML')
-                print(f"  👉 Posted MTProto Chunk [{idx}/{len(chunks)}]")
+                print(f"  👉 Posted Telegram Proxy Chunk [{idx}/{len(chunks)}]")
                 time.sleep(3.5)
                 break
             except ApiTelegramException as e:
@@ -406,14 +445,12 @@ def main():
     v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
     mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
 
-    # اجرای همزمان دو تابع انتشار در دو ترد (Thread) مجزا
     t1 = threading.Thread(target=publish_v2ray, args=(v2ray_configs,))
     t2 = threading.Thread(target=publish_mtproto, args=(mtproto_configs,))
 
     t1.start()
     t2.start()
 
-    # صبر کردن تا کار هر دو ترد تمام شود
     t1.join()
     t2.join()
 
