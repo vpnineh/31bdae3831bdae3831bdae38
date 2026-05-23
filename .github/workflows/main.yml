@@ -8,21 +8,24 @@ on:
 jobs:
   run-script:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # اجازه نوشتن در ریپازیتوری
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # گرفتن کل تاریخچه گیت برای پوش کردن
 
-      - name: Cache Databases
+      - name: Cache Offline GeoDBs
         uses: actions/cache@v3
         with:
           path: |
-            history.txt
             GeoLite2-Country.mmdb
             GeoLite2-ASN.mmdb
-          key: vpn-data-${{ github.run_id }}
+          key: geodb-${{ github.run_id }}
           restore-keys: |
-            vpn-data-
+            geodb-
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -39,3 +42,11 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           PYTHONUNBUFFERED: "1" 
         run: python main.py
+
+      - name: Commit and Push history.txt
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add history.txt
+          # فقط در صورتی پوش کن که فایل واقعا تغییر کرده باشد
+          git diff --quiet && git diff --staged --quiet || (git commit -m "📝 Auto-update history database [skip ci]" && git push)
