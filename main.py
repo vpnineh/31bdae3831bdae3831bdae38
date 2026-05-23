@@ -350,8 +350,8 @@ def main():
                   f"🛡 #V2RAY\n\n"
             
             for c in chunk:
-                # ایجاد باکس مجزا برای هر کانفیگ جهت کپی تکی راحت کاربر
-                msg += f"<pre><code>{c['config']}</code></pre>\n\n"
+                # استفاده از کوتِ شیک و ساده (بدون قابلیت جمع شدنِ expandable) با قابلیت کپی تکی
+                msg += f"<blockquote><code>{c['config']}</code></blockquote>\n\n"
             
             msg += f"📡 @zVPN24"
             
