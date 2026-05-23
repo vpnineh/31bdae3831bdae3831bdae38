@@ -11,6 +11,7 @@ from urllib.parse import urlparse, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import maxminddb  # کتابخانه رسمی برای خواندن دیتابیس‌های آفلاین Geo
 
 # ==========================================
 # 1. Configurations
@@ -26,13 +27,19 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# فایل‌های دیتابیس
+# فایل‌ها
 HISTORY_FILE = 'history.json'
-GEO_CACHE_FILE = 'geo_cache.json'
 SOURCES_FILE = 'sources.txt'
 
+# دیتابیس‌های آفلاین
+COUNTRY_DB_FILE = 'GeoLite2-Country.mmdb'
+ASN_DB_FILE = 'GeoLite2-ASN.mmdb'
+# لینک‌های دیتابیس رایگان و آپدیت‌شده گیت‌هاب (PrxyHunter)
+COUNTRY_DB_URL = 'https://github.com/PrxyHunter/GeoLite2/releases/latest/download/GeoLite2-Country.mmdb'
+ASN_DB_URL = 'https://github.com/PrxyHunter/GeoLite2/releases/latest/download/GeoLite2-ASN.mmdb'
+
 # ==========================================
-# 2. File & Cache Management
+# 2. File & Database Management
 # ==========================================
 def load_json(filepath):
     if os.path.exists(filepath):
@@ -56,8 +63,32 @@ def get_lines_from_file(filepath):
 def generate_hash(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
+def update_offline_geo_dbs():
+    """دانلود دیتابیس‌های آفلاین در صورتی که وجود ندارند یا بیشتر از 10 روز از عمرشان گذشته است."""
+    ten_days = 10 * 24 * 60 * 60
+    now = time.time()
+    
+    for url, filepath in [(COUNTRY_DB_URL, COUNTRY_DB_FILE), (ASN_DB_URL, ASN_DB_FILE)]:
+        needs_download = False
+        if not os.path.exists(filepath):
+            needs_download = True
+        elif (now - os.path.getmtime(filepath)) > ten_days:
+            needs_download = True
+            
+        if needs_download:
+            print(f"📥 Downloading/Updating offline GeoDB: {filepath}...")
+            try:
+                r = requests.get(url, stream=True, timeout=30)
+                if r.status_code == 200:
+                    with open(filepath, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=1024*1024):
+                            f.write(chunk)
+                    print(f"✅ {filepath} updated successfully.")
+            except Exception as e:
+                print(f"❌ Failed to download {filepath}: {e}")
+
 # ==========================================
-# 3. Network & Geo-Location Functions
+# 3. Network & Offline Geo-Location Functions
 # ==========================================
 def check_liveness(ip, port, timeout=1.5):
     try:
@@ -69,33 +100,28 @@ def check_liveness(ip, port, timeout=1.5):
     except:
         return False
 
-def get_location_info(ip, geo_cache):
-    """دریافت لوکیشن و دیتاسنتر. در صورت عدم شناسایی، None برمی‌گرداند."""
-    now = time.time()
-    if ip in geo_cache and (now - geo_cache[ip].get('time', 0)) < 864000:
-        if geo_cache[ip].get('loc') == 'Unknown':
-            return None
-        return geo_cache[ip]
-
+def get_location_info_offline(ip, reader_country, reader_asn):
+    """استخراج کشور و دیتاسنتر در کسری از میلی‌ثانیه بدون نیاز به اینترنت"""
     try:
-        # درخواست نام کشور، کد کشور و نام دیتاسنتر (ISP/Org)
-        resp = requests.get(f"http://ip-api.com/json/{ip}?fields=country,countryCode,isp,org", timeout=3).json()
-        if resp.get('countryCode'):
-            flag = chr(ord(resp['countryCode'][0]) + 127397) + chr(ord(resp['countryCode'][1]) + 127397)
-            loc = resp['country']
-            code = resp['countryCode']
-            
-            # تمیز کردن نام دیتاسنتر از کاراکترهایی که مارک‌داون تلگرام را خراب می‌کنند
-            raw_isp = resp.get('org') or resp.get('isp') or "Unknown ISP"
-            isp = raw_isp.replace('_', ' ').replace('*', '').replace('`', '')
-            
-            data = {'loc': loc, 'flag': flag, 'code': code, 'isp': isp, 'time': now}
-            geo_cache[ip] = data
-            return data
+        country_data = reader_country.get(ip)
+        asn_data = reader_asn.get(ip)
+        
+        # اگر کشور پیدا نشد، کلا کانفیگ رو رد کن
+        if country_data and 'country' in country_data and 'iso_code' in country_data['country']:
+            code = country_data['country']['iso_code']
+            loc = country_data['country']['names'].get('en', code)
+            flag = chr(ord(code[0]) + 127397) + chr(ord(code[1]) + 127397)
+        else:
+            return None 
+
+        # استخراج دیتاسنتر (ASN)
+        isp = "Unknown ISP"
+        if asn_data and 'autonomous_system_organization' in asn_data:
+            isp = asn_data['autonomous_system_organization'].replace('_', ' ').replace('*', '').replace('`', '')
+
+        return {'loc': loc, 'flag': flag, 'code': code, 'isp': isp}
     except:
-        pass
-    
-    return None # اگر لوکیشن پیدا نشد عبور کن
+        return None
 
 def fix_base64(s):
     return s + '=' * (4 - len(s) % 4)
@@ -103,7 +129,7 @@ def fix_base64(s):
 # ==========================================
 # 4. Config Analyzer & Modifier
 # ==========================================
-def process_config(raw_config, geo_cache):
+def process_config(raw_config, reader_country, reader_asn):
     config = raw_config.strip()
     config_hash = generate_hash(config)
     ip = port = None
@@ -126,11 +152,10 @@ def process_config(raw_config, geo_cache):
             ip, port = v_data.get("add"), v_data.get("port")
             
             if ip and port and check_liveness(ip, port):
-                geo_info = get_location_info(ip, geo_cache)
-                if not geo_info: # فیلتر لوکیشن
+                geo_info = get_location_info_offline(ip, reader_country, reader_asn)
+                if not geo_info: 
                     return None
                     
-                # ساخت ریمارک: ⚙️@zVPN24 | 🇩🇪 DE
                 remark = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 v_data['ps'] = remark
                 
@@ -144,20 +169,18 @@ def process_config(raw_config, geo_cache):
             ip, port = parsed.hostname, parsed.port
             
             if ip and port and check_liveness(ip, port):
-                geo_info = get_location_info(ip, geo_cache)
-                if not geo_info: # فیلتر لوکیشن
+                geo_info = get_location_info_offline(ip, reader_country, reader_asn)
+                if not geo_info: 
                     return None
                     
                 base_uri = config.split('#')[0]
-                # چسباندن ریمارک بدون urlencode تا در تلگرام زیبا دیده شود
                 remark = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 final_config = f"{base_uri}#{remark}"
                 
                 return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
 
-        # پردازش پروکسی‌ها
         if ip and port and config_type == "MTPROTO" and check_liveness(ip, port):
-            geo_info = get_location_info(ip, geo_cache)
+            geo_info = get_location_info_offline(ip, reader_country, reader_asn)
             if not geo_info:
                 return None
             return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
@@ -171,25 +194,21 @@ def process_config(raw_config, geo_cache):
 # 5. Scrapers (Sources & YAML Converter)
 # ==========================================
 def convert_yaml_sub(link):
-    """تبدیل لینک‌های YAML به V2Ray با استفاده از 3 مبدل پشتیبان"""
     apis = [
         f"https://sub.v1.mk/sub?target=v2ray&url={link}",
         f"https://api.v1.mk/sub?target=v2ray&url={link}",
         f"https://api.nameless13.com/sub?target=v2ray&url={link}"
     ]
-    
     for api in apis:
         try:
             r = requests.get(api, timeout=10)
             if r.status_code == 200:
                 text = r.text.strip()
-                # مبدل‌ها نتیجه را Base64 می‌دهند، دی‌کد می‌کنیم
                 decoded = base64.b64decode(fix_base64(text)).decode('utf-8')
                 return decoded.splitlines()
         except:
             continue
-            
-    return [] # اگر هر 3 مبدل شکست خوردند، لیست خالی برمی‌گرداند
+    return []
 
 def get_raw_configs():
     configs = []
@@ -204,14 +223,11 @@ def get_raw_configs():
             ch = s.replace('https://t.me/s/', '').replace('https://t.me/', '').replace('@', '').strip()
             channels.append(ch)
             
-    # پردازش ساب‌لینک‌ها (عادی و YAML)
     for link in subs:
         try:
             r = requests.get(link, timeout=10)
             if r.status_code == 200:
                 text = r.text.strip()
-                
-                # بررسی اینکه آیا محتوا YAML/Clash است یا خیر
                 if "proxies:" in text or "port:" in text:
                     configs.extend(convert_yaml_sub(link))
                 else:
@@ -224,7 +240,6 @@ def get_raw_configs():
         except:
             continue
             
-    # پردازش تلگرام
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
@@ -247,9 +262,17 @@ def get_raw_configs():
 # 6. Main Execution & Telegram Publisher
 # ==========================================
 def main():
-    history = load_json(HISTORY_FILE)
-    geo_cache = load_json(GEO_CACHE_FILE)
+    # 1. آپدیت و راه‌اندازی دیتابیس آفلاین GeoIP
+    update_offline_geo_dbs()
     
+    if not os.path.exists(COUNTRY_DB_FILE) or not os.path.exists(ASN_DB_FILE):
+        print("❌ Critical: Offline Geo databases are missing! Exiting...")
+        exit(1)
+        
+    reader_country = maxminddb.open_database(COUNTRY_DB_FILE)
+    reader_asn = maxminddb.open_database(ASN_DB_FILE)
+
+    history = load_json(HISTORY_FILE)
     print("🔄 Scraping sources...")
     raw_configs = get_raw_configs()
     
@@ -261,7 +284,8 @@ def main():
     processed_count = 0
     
     with ThreadPoolExecutor(max_workers=100) as executor:
-        futures = {executor.submit(process_config, conf, geo_cache): conf for conf in new_configs}
+        # ارسال readers به تردها (کتابخانه maxminddb از ThreadPool پشتیبانی می‌کند)
+        futures = {executor.submit(process_config, conf, reader_country, reader_asn): conf for conf in new_configs}
         for future in as_completed(futures):
             processed_count += 1
             res = future.result()
@@ -269,12 +293,13 @@ def main():
             if res:
                 active_results.append(res)
                 history[res['hash']] = time.time()
-                print(f"[{processed_count}/{total_new}] ✅ Active IP Found: {res['ip']} ({res['geo']['code']})")
+                print(f"[{processed_count}/{total_new}] ✅ Active: {res['ip']} ({res['geo']['code']} - {res['geo']['isp']})")
             elif processed_count % 10 == 0 or processed_count == total_new:
                 print(f"[{processed_count}/{total_new}] ⏳ Processing...")
 
     save_json(HISTORY_FILE, history)
-    save_json(GEO_CACHE_FILE, geo_cache)
+    reader_country.close()
+    reader_asn.close()
     
     print(f"\n🎯 Total Active Configs: {len(active_results)}")
     print("🚀 Starting Telegram Publisher...")
@@ -282,7 +307,6 @@ def main():
     # انتشار V2Ray
     v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
     for idx, c in enumerate(v2ray_configs, 1):
-        # استفاده از کوت باز (Backtick) برای کپی با یک لمس
         geo = c['geo']
         msg = f"📍 **Location:** {geo['flag']} {geo['loc']}\n" \
               f"🏢 **ISP:** {geo['isp']}\n" \
