@@ -47,11 +47,25 @@ def load_history(filepath):
             return set(line.strip() for line in f if line.strip())
     return set()
 
-def append_to_history(filepath, new_hashes):
-    """اضافه کردن هش‌های جدید به انتهای فایل (بسیار سریع‌تر از ذخیره مجدد کل فایل)"""
+def append_to_history(filepath, new_hashes, max_lines=40000):
     if not new_hashes: return
-    with open(filepath, 'a', encoding='utf-8') as f:
-        for h in new_hashes:
+    
+    # خواندن فایل موجود
+    existing = []
+    if os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            existing = [line.strip() for line in f if line.strip()]
+            
+    # اضافه کردن هش‌های جدید به انتهای لیست
+    existing.extend(new_hashes)
+    
+    # اگر تعداد از 40 هزار خط گذشت، فقط 40 هزار تای جدیدتر را نگه دار
+    if len(existing) > max_lines:
+        existing = existing[-max_lines:]
+        
+    # بازنویسی فایل تمیز شده
+    with open(filepath, 'w', encoding='utf-8') as f:
+        for h in existing:
             f.write(h + '\n')
 
 def get_deep_hash(config):
