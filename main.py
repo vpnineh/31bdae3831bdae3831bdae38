@@ -28,7 +28,7 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# فایل‌ها (هیستوری به txt تغییر کرد برای سرعت فوق‌العاده)
+# فایل‌ها
 HISTORY_FILE = 'history.txt'
 SOURCES_FILE = 'sources.txt'
 
@@ -41,51 +41,43 @@ ASN_DB_URL = 'https://github.com/PrxyHunter/GeoLite2/releases/latest/download/Ge
 # 2. Advanced Deep Hash & History Management
 # ==========================================
 def load_history(filepath):
-    """بارگذاری 40 هزار هش در یک Set برای جستجوی صفر ثانیه‌ای"""
+    """بارگذاری هش‌ها در یک Set برای جستجوی فوق‌سریع"""
     if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             return set(line.strip() for line in f if line.strip())
     return set()
 
 def append_to_history(filepath, new_hashes, max_lines=40000):
+    """مدیریت هوشمند دیتابیس تاریخچه با سقف 40 هزار خط"""
     if not new_hashes: return
     
-    # خواندن فایل موجود
     existing = []
     if os.path.exists(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             existing = [line.strip() for line in f if line.strip()]
             
-    # اضافه کردن هش‌های جدید به انتهای لیست
     existing.extend(new_hashes)
     
-    # اگر تعداد از 40 هزار خط گذشت، فقط 40 هزار تای جدیدتر را نگه دار
     if len(existing) > max_lines:
         existing = existing[-max_lines:]
         
-    # بازنویسی فایل تمیز شده
     with open(filepath, 'w', encoding='utf-8') as f:
         for h in existing:
             f.write(h + '\n')
 
 def get_deep_hash(config):
-    """
-    استخراج هویت اصلی سرور: ریمارک‌ها و پارامترهای اضافی حذف می‌شوند
-    و هش فقط بر اساس (IP + Port + Password/UUID) ساخته می‌شود.
-    """
+    """استخراج هسته اصلی کانفیگ برای جلوگیری از انتشار تکراری‌های تغییر نام یافته"""
     config = config.strip()
     try:
         if config.startswith("vmess://"):
             b64_str = config.replace("vmess://", "")
             decoded = base64.b64decode(s=b64_str + '=' * (4 - len(b64_str) % 4)).decode('utf-8')
             v_data = json.loads(decoded)
-            # هسته Vmess: آی‌پی + پورت + آیدی
             core_str = f"vmess|{v_data.get('add')}:{v_data.get('port')}|{v_data.get('id')}"
             return hashlib.sha256(core_str.encode()).hexdigest()
             
         elif any(config.startswith(p) for p in ["vless://", "trojan://", "ss://"]):
             parsed = urlparse(config)
-            # هسته Vless/Trojan: پروتکل + آی‌پی + پورت + یوزرنیم (همان UUID یا پسورد)
             core_str = f"{parsed.scheme}|{parsed.hostname}:{parsed.port}|{parsed.username}"
             return hashlib.sha256(core_str.encode()).hexdigest()
             
@@ -94,13 +86,11 @@ def get_deep_hash(config):
             port_m = re.search(r'port=(\d+)', config)
             sec_m = re.search(r'secret=([^&]+)', config)
             if ip_m and port_m and sec_m:
-                # هسته پروکسی: آی‌پی + پورت + سکرت
                 core_str = f"mtproto|{ip_m.group(1)}:{port_m.group(1)}|{sec_m.group(1)}"
                 return hashlib.sha256(core_str.encode()).hexdigest()
     except:
         pass
     
-    # اگر فرمت ناشناخته بود، کل رشته را هش کن
     return hashlib.sha256(config.encode('utf-8')).hexdigest()
 
 # ==========================================
@@ -149,9 +139,10 @@ def get_location_info_offline(ip, reader_country, reader_asn):
         else:
             return None 
 
-        isp = "Unknown ISP"
         if asn_data and 'autonomous_system_organization' in asn_data:
             isp = asn_data['autonomous_system_organization'].replace('_', ' ').replace('*', '').replace('`', '')
+        else:
+            return None # فیلتر سخت‌گیرانه دیتاسنتر
 
         return {'loc': loc, 'flag': flag, 'code': code, 'isp': isp}
     except:
@@ -165,7 +156,7 @@ def fix_base64(s):
 # ==========================================
 def process_config(raw_config, reader_country, reader_asn):
     config = raw_config.strip()
-    config_hash = get_deep_hash(config) # استفاده از هش عمیق
+    config_hash = get_deep_hash(config) 
     ip = port = None
     config_type = "UNKNOWN"
     final_config = config
@@ -185,9 +176,6 @@ def process_config(raw_config, reader_country, reader_asn):
             v_data = json.loads(decoded)
             ip, port = v_data.get("add"), v_data.get("port")
             
-            security = v_data.get("tls") or "none"
-            if security == "": security = "none"
-            
             if ip and port and check_liveness(ip, port):
                 geo_info = get_location_info_offline(ip, reader_country, reader_asn)
                 if not geo_info: return None
@@ -195,15 +183,12 @@ def process_config(raw_config, reader_country, reader_asn):
                 v_data['ps'] = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 new_b64 = base64.b64encode(json.dumps(v_data).encode('utf-8')).decode('utf-8')
                 final_config = f"vmess://{new_b64}"
-                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash, "security": security.upper()}
+                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
 
         elif any(config.startswith(p) for p in ["vless://", "trojan://", "ss://"]):
             config_type = "V2RAY"
             parsed = urlparse(config)
             ip, port = parsed.hostname, parsed.port
-            
-            query_params = parse_qs(parsed.query)
-            security = query_params.get("security", ["none"])[0]
             
             if ip and port and check_liveness(ip, port):
                 geo_info = get_location_info_offline(ip, reader_country, reader_asn)
@@ -211,7 +196,7 @@ def process_config(raw_config, reader_country, reader_asn):
                     
                 base_uri = config.split('#')[0]
                 final_config = f"{base_uri}#{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
-                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash, "security": security.upper()}
+                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
 
         if ip and port and config_type == "MTPROTO" and check_liveness(ip, port):
             geo_info = get_location_info_offline(ip, reader_country, reader_asn)
@@ -288,7 +273,7 @@ def get_raw_configs():
     return list(set([c.strip() for c in configs if c.strip()]))
 
 # ==========================================
-# 6. Main Engine
+# 6. Main Engine & Publisher
 # ==========================================
 def main():
     update_offline_geo_dbs()
@@ -299,20 +284,17 @@ def main():
     reader_country = maxminddb.open_database(COUNTRY_DB_FILE)
     reader_asn = maxminddb.open_database(ASN_DB_FILE)
 
-    # بارگیری سریع هیستوری در یک Set
     history = load_history(HISTORY_FILE)
     print(f"📚 Loaded {len(history)} hashes from deep history.")
     
     print("🔄 Scraping sources...")
     raw_configs = get_raw_configs()
     
-    # فیلتر عمیق: فقط کانفیگ‌هایی که هویت آن‌ها در تاریخچه نیست وارد می‌شوند
     new_configs = []
     for c in raw_configs:
         h = get_deep_hash(c)
         if h not in history:
             new_configs.append(c)
-            # هش را موقتا در مموری اضافه می‌کنیم تا در یک ران هم تکراری نگیرد
             history.add(h) 
             
     total_new = len(new_configs)
@@ -329,12 +311,11 @@ def main():
             res = future.result()
             if res:
                 active_results.append(res)
-                new_active_hashes.append(res['hash']) # نگه داشتن هش‌های جدید برای فایل
+                new_active_hashes.append(res['hash']) 
                 print(f"[{processed_count}/{total_new}] ✅ Active: {res['ip']} ({res['geo']['code']} - {res['geo']['isp']})")
             elif processed_count % 10 == 0 or processed_count == total_new:
                 print(f"[{processed_count}/{total_new}] ⏳ Processing...")
 
-    # فقط هش سرورهای فعال جدید به فایل اضافه می‌شود
     append_to_history(HISTORY_FILE, new_active_hashes)
     reader_country.close()
     reader_asn.close()
@@ -345,32 +326,56 @@ def main():
         
     print("🚀 Starting Telegram Publisher...")
 
+    # ==========================================
+    # 6.1 انتشار V2Ray (گروه‌بندی شده و باکس کدبلاک مجزا)
+    # ==========================================
     v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
-    for idx, c in enumerate(v2ray_configs, 1):
+    
+    grouped_v2ray = {}
+    for c in v2ray_configs:
         geo = c['geo']
-        security = c.get('security', 'NONE')
-        
-        msg = f"🛡 <b>Type:</b> #{c['type']}\n" \
-              f"📍 <b>Location:</b> {geo['flag']} {geo['loc']}\n" \
-              f"🏢 <b>Datacenter:</b> {geo['isp']}\n" \
-              f"🔒 <b>Security:</b> {security}\n\n" \
-              f"<blockquote><code>{c['config']}</code></blockquote>\n\n" \
-              f"📡 @zVPN24"
-              
-        while True:
-            try:
-                bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
-                print(f"  👉 Posted V2Ray [{idx}/{len(v2ray_configs)}]")
-                time.sleep(3.5)
-                break
-            except ApiTelegramException as e:
-                if e.error_code == 429:
-                    r = int(e.result_json['parameters']['retry_after'])
-                    print(f"  ⚠️ Rate Limit! Sleep {r}s...")
-                    time.sleep(r + 1)
-                else: break
-            except Exception: break
+        group_key = f"{geo['code']}_{geo['isp']}"
+        if group_key not in grouped_v2ray:
+            grouped_v2ray[group_key] = []
+        grouped_v2ray[group_key].append(c)
 
+    for group_key, configs in grouped_v2ray.items():
+        chunk_size = 10
+        for i in range(0, len(configs), chunk_size):
+            chunk = configs[i:i+chunk_size]
+            geo = chunk[0]['geo']
+            
+            msg = f"📍 <b>Location:</b> {geo['flag']} {geo['loc']}\n" \
+                  f"🏢 <b>Datacenter:</b> {geo['isp']}\n" \
+                  f"🛡 #V2RAY\n\n"
+            
+            for c in chunk:
+                # ایجاد باکس مجزا برای هر کانفیگ جهت کپی تکی راحت کاربر
+                msg += f"<pre><code>{c['config']}</code></pre>\n\n"
+            
+            msg += f"📡 @zVPN24"
+            
+            while True:
+                try:
+                    bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
+                    print(f"  👉 Posted Grouped V2Ray [{geo['code']} - {geo['isp']}] ({len(chunk)} configs)")
+                    time.sleep(3.5)
+                    break
+                except ApiTelegramException as e:
+                    if e.error_code == 429:
+                        r = int(e.result_json['parameters']['retry_after'])
+                        print(f"  ⚠️ Rate Limit! Sleep {r}s...")
+                        time.sleep(r + 1)
+                    else:
+                        print(f"  ❌ V2Ray Publish Error: {e}")
+                        break
+                except Exception as e:
+                    print(f"  ❌ General Publish Error: {e}")
+                    break
+
+    # ==========================================
+    # 6.2 انتشار MTProto (دکمه شیشه‌ای)
+    # ==========================================
     mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
     chunks = [mtproto_configs[i:i+4] for i in range(0, len(mtproto_configs), 4)]
     
