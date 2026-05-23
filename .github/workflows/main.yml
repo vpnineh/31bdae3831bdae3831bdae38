@@ -3,7 +3,7 @@ name: zVPN24 & zProxy24 Auto Fetcher
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */12 * * *'
+    - cron: '0 */3 * * *'
 
 jobs:
   run-script:
@@ -13,11 +13,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      - name: Cache Databases (History & Offline GeoDBs)
+      - name: Cache Databases
         uses: actions/cache@v3
         with:
           path: |
-            history.json
+            history.txt
             GeoLite2-Country.mmdb
             GeoLite2-ASN.mmdb
           key: vpn-data-${{ github.run_id }}
