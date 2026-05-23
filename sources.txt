@@ -1,3 +1,5 @@
+
+https://raw.githubusercontent.com/sakha1370/OpenRay/refs/heads/main/output_iran/iran_top100_checked.txt
 https://raw.githubusercontent.com/10ium/V2RayAggregator/refs/heads/master/Eternity.txt
 https://github.com/4n0nymou3/multi-proxy-config-fetcher/raw/refs/heads/main/configs/proxy_configs_tested.txt
 https://raw.githubusercontent.com/Pawdroid/Free-servers/refs/heads/main/sub
