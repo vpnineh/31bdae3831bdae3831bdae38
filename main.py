@@ -29,7 +29,6 @@ if not BOT_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# فایل‌ها
 HISTORY_FILE = 'history.txt'
 SOURCES_FILE = 'sources.txt'
 
@@ -64,12 +63,21 @@ def append_to_history(filepath, new_hashes, max_lines=40000):
         for h in existing:
             f.write(h + '\n')
 
+def fix_base64(s):
+    """رفع مشکل پدینگ و کاراکترهای URL-Safe در Base64"""
+    s = s.strip().replace('-', '+').replace('_', '/')
+    padding = len(s) % 4
+    if padding != 0:
+        s += '=' * (4 - padding)
+    return s
+
 def get_deep_hash(config):
     config = config.strip().replace("&amp;", "&")
     try:
         if config.startswith("vmess://"):
             b64_str = config.replace("vmess://", "")
-            decoded = base64.b64decode(s=b64_str + '=' * (4 - len(b64_str) % 4)).decode('utf-8')
+            # استفاده از errors='ignore' برای جلوگیری از کرش به خاطر کاراکترهای نامعتبر
+            decoded = base64.b64decode(fix_base64(b64_str)).decode('utf-8', errors='ignore')
             v_data = json.loads(decoded)
             core_str = f"vmess|{v_data.get('add')}:{v_data.get('port')}|{v_data.get('id')}"
             return hashlib.sha256(core_str.encode()).hexdigest()
@@ -153,9 +161,6 @@ def get_location_info_offline(ip, reader_country, reader_asn):
     except:
         return None
 
-def fix_base64(s):
-    return s + '=' * (4 - len(s) % 4)
-
 # ==========================================
 # 4. Config Analyzer & Modifier
 # ==========================================
@@ -206,7 +211,7 @@ def process_config(raw_config, reader_country, reader_asn):
         elif config.startswith("vmess://"):
             config_type = "V2RAY"
             b64_str = config.replace("vmess://", "")
-            decoded = base64.b64decode(fix_base64(b64_str)).decode('utf-8')
+            decoded = base64.b64decode(fix_base64(b64_str)).decode('utf-8', errors='ignore')
             v_data = json.loads(decoded)
             ip, port = v_data.get("add"), v_data.get("port")
             
@@ -255,7 +260,7 @@ def convert_yaml_sub(link):
             r = requests.get(api, timeout=10)
             if r.status_code == 200:
                 text = r.text.strip()
-                decoded = base64.b64decode(fix_base64(text)).decode('utf-8')
+                decoded = base64.b64decode(fix_base64(text)).decode('utf-8', errors='ignore')
                 return decoded.splitlines()
         except:
             continue
@@ -283,7 +288,7 @@ def get_raw_configs():
                 else:
                     if "://" not in text[:50]:
                         try:
-                            text = base64.b64decode(fix_base64(text)).decode('utf-8')
+                            text = base64.b64decode(fix_base64(text)).decode('utf-8', errors='ignore')
                         except:
                             pass
                     configs.extend(text.splitlines())
@@ -390,8 +395,15 @@ def main():
         print("❌ Critical: Offline Geo databases missing!")
         exit(1)
         
-    reader_country = maxminddb.open_database(COUNTRY_DB_FILE)
-    reader_asn = maxminddb.open_database(ASN_DB_FILE)
+    # کنترل خطای کرش شدن به خاطر دیتابیس خراب (محافظت 100%)
+    try:
+        reader_country = maxminddb.open_database(COUNTRY_DB_FILE)
+        reader_asn = maxminddb.open_database(ASN_DB_FILE)
+    except Exception as e:
+        print(f"❌ GeoDB corrupted! Deleting to redownload next run. Error: {e}")
+        os.remove(COUNTRY_DB_FILE)
+        os.remove(ASN_DB_FILE)
+        exit(1)
 
     history = load_history(HISTORY_FILE)
     print(f"📚 Loaded {len(history)} hashes from deep history.")
@@ -407,8 +419,6 @@ def main():
             history.add(h) 
             
     total_new = len(new_configs)
-    
-    # شمارش دقیق قبل از تست برای لاگ
     new_v2ray_count = sum(1 for c in new_configs if any(c.startswith(p) for p in ["vmess://", "vless://", "trojan://", "ss://"]))
     new_mtp_count = total_new - new_v2ray_count
     
@@ -440,7 +450,6 @@ def main():
     v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
     mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
 
-    # چاپ گزارش نهایی شیک و دقیق
     print("\n" + "="*40)
     print("🎯 FINAL SCRAPE REPORT")
     print("="*40)
