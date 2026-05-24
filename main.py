@@ -65,7 +65,7 @@ def append_to_history(filepath, new_hashes, max_lines=40000):
             f.write(h + '\n')
 
 def get_deep_hash(config):
-    config = config.strip()
+    config = config.strip().replace("&amp;", "&") # حل مشکل کدهای HTML تلگرام
     try:
         if config.startswith("vmess://"):
             b64_str = config.replace("vmess://", "")
@@ -79,8 +79,7 @@ def get_deep_hash(config):
             core_str = f"{parsed.scheme}|{parsed.hostname}:{parsed.port}|{parsed.username}"
             return hashlib.sha256(core_str.encode()).hexdigest()
             
-        # هش‌سازی قدرتمند برای انواع پروکسی‌های تلگرامی و ساکس
-        elif config.startswith("tg://") or config.startswith("https://t.me/"):
+        elif config.startswith("tg://") or "t.me/" in config:
             query_str = config.split('?')[1] if '?' in config else ""
             query_params = parse_qs(query_str)
             srv = query_params.get("server", [""])[0]
@@ -161,15 +160,15 @@ def fix_base64(s):
 # 4. Config Analyzer & Modifier
 # ==========================================
 def process_config(raw_config, reader_country, reader_asn):
-    config = raw_config.strip()
+    config = raw_config.strip().replace("&amp;", "&") # حل باگ HTML Entity
     config_hash = get_deep_hash(config) 
     ip = port = None
     config_type = "UNKNOWN"
     final_config = config
 
     try:
-        # بررسی و تبدیل هوشمندِ پروکسی‌های تلگرام (MTProto و SOCKS)
-        if config.startswith("tg://") or config.startswith("https://t.me/"):
+        # بررسی و تبدیل هوشمندِ پروکسی‌های تلگرام
+        if config.startswith("tg://") or "t.me/" in config:
             query_str = config.split('?')[1] if '?' in config else ""
             query_params = parse_qs(query_str)
             
@@ -180,7 +179,6 @@ def process_config(raw_config, reader_country, reader_asn):
                 ip, port = srv, int(prt)
                 config_type = "MTPROTO"
                 
-                # استانداردسازی به لینک t.me برای عملکرد صحیح دکمه شیشه‌ای
                 if "proxy" in config:
                     sec = query_params.get("secret", [""])[0]
                     final_config = f"https://t.me/proxy?server={ip}&port={port}&secret={sec}"
@@ -193,7 +191,6 @@ def process_config(raw_config, reader_country, reader_asn):
             else:
                 return None
 
-        # تبدیل لینک‌های خام socks5 به پروکسی تلگرام
         elif config.startswith("socks5://"):
             parsed = urlparse(config)
             ip, port = parsed.hostname, parsed.port
@@ -207,7 +204,6 @@ def process_config(raw_config, reader_country, reader_asn):
             else:
                 return None
 
-        # بررسی خانواده V2Ray
         elif config.startswith("vmess://"):
             config_type = "V2RAY"
             b64_str = config.replace("vmess://", "")
@@ -237,7 +233,6 @@ def process_config(raw_config, reader_country, reader_asn):
                 final_config = f"{base_uri}#{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
 
-        # تست نهایی لایونس (پینگ) برای پروکسی‌های تلگرامی
         if ip and port and config_type == "MTPROTO" and check_liveness(ip, port):
             geo_info = get_location_info_offline(ip, reader_country, reader_asn)
             if not geo_info: return None
@@ -299,15 +294,16 @@ def get_raw_configs():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
-    # جستجوی تمام الگوها شامل پروکسی‌های تلگرامی و ساکس
     for channel in channels:
         try:
             r = requests.get(f"https://t.me/s/{channel}", headers=headers, timeout=10)
             if r.status_code == 200:
-                html = unquote(r.text)
+                # جایگزینی اولیه برای اطمینان بیشتر در کل متن HTML
+                html = unquote(r.text).replace("&amp;", "&")
                 for msg in html.split('tgme_widget_message js-widget_message'):
                     if f'datetime="{today_str}' in msg:
-                        configs.extend(re.findall(r'(vless://[^\s<"]+|vmess://[^\s<"]+|trojan://[^\s<"]+|ss://[^\s<"]+|socks5://[^\s<"]+|tg://proxy\?[^\s<"]+|https://t\.me/proxy\?[^\s<"]+|https://t\.me/socks\?[^\s<"]+|tg://socks\?[^\s<"]+)', msg))
+                        # پشتیبانی کامل از تمام لینک‌های استاندارد و غیر استاندارد تلگرام
+                        configs.extend(re.findall(r'(vless://[^\s<"]+|vmess://[^\s<"]+|trojan://[^\s<"]+|ss://[^\s<"]+|socks5://[^\s<"]+|tg://proxy\?[^\s<"]+|https?://t\.me/proxy\?[^\s<"]+|https?://t\.me/socks\?[^\s<"]+|tg://socks\?[^\s<"]+)', msg))
         except:
             continue
             
