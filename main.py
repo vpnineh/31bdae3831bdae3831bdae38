@@ -65,7 +65,7 @@ def append_to_history(filepath, new_hashes, max_lines=40000):
             f.write(h + '\n')
 
 def get_deep_hash(config):
-    config = config.strip().replace("&amp;", "&") # حل مشکل کدهای HTML تلگرام
+    config = config.strip().replace("&amp;", "&")
     try:
         if config.startswith("vmess://"):
             b64_str = config.replace("vmess://", "")
@@ -160,14 +160,13 @@ def fix_base64(s):
 # 4. Config Analyzer & Modifier
 # ==========================================
 def process_config(raw_config, reader_country, reader_asn):
-    config = raw_config.strip().replace("&amp;", "&") # حل باگ HTML Entity
+    config = raw_config.strip().replace("&amp;", "&")
     config_hash = get_deep_hash(config) 
     ip = port = None
     config_type = "UNKNOWN"
     final_config = config
 
     try:
-        # بررسی و تبدیل هوشمندِ پروکسی‌های تلگرام
         if config.startswith("tg://") or "t.me/" in config:
             query_str = config.split('?')[1] if '?' in config else ""
             query_params = parse_qs(query_str)
@@ -298,11 +297,9 @@ def get_raw_configs():
         try:
             r = requests.get(f"https://t.me/s/{channel}", headers=headers, timeout=10)
             if r.status_code == 200:
-                # جایگزینی اولیه برای اطمینان بیشتر در کل متن HTML
                 html = unquote(r.text).replace("&amp;", "&")
                 for msg in html.split('tgme_widget_message js-widget_message'):
                     if f'datetime="{today_str}' in msg:
-                        # پشتیبانی کامل از تمام لینک‌های استاندارد و غیر استاندارد تلگرام
                         configs.extend(re.findall(r'(vless://[^\s<"]+|vmess://[^\s<"]+|trojan://[^\s<"]+|ss://[^\s<"]+|socks5://[^\s<"]+|tg://proxy\?[^\s<"]+|https?://t\.me/proxy\?[^\s<"]+|https?://t\.me/socks\?[^\s<"]+|tg://socks\?[^\s<"]+)', msg))
         except:
             continue
@@ -410,7 +407,15 @@ def main():
             history.add(h) 
             
     total_new = len(new_configs)
-    print(f"📊 Found {total_new} deeply unique configs. Testing...")
+    
+    # شمارش دقیق قبل از تست برای لاگ
+    new_v2ray_count = sum(1 for c in new_configs if any(c.startswith(p) for p in ["vmess://", "vless://", "trojan://", "ss://"]))
+    new_mtp_count = total_new - new_v2ray_count
+    
+    print(f"\n📊 Found {total_new} deeply unique configs:")
+    print(f"   ┣ 🛡 V2Ray: {new_v2ray_count}")
+    print(f"   ┗ ⚡️ MTProto/Socks: {new_mtp_count}")
+    print("⏳ Testing liveness...\n")
     
     active_results = []
     new_active_hashes = []
@@ -432,14 +437,24 @@ def main():
     reader_country.close()
     reader_asn.close()
     
-    print(f"\n🎯 Total Active Configs: {len(active_results)}")
+    v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
+    mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
+
+    # چاپ گزارش نهایی شیک و دقیق
+    print("\n" + "="*40)
+    print("🎯 FINAL SCRAPE REPORT")
+    print("="*40)
+    print(f"   🔍 Total Unique Found: {total_new}")
+    print(f"   ✅ Total Active (Passed): {len(active_results)}")
+    print("   ----------------------------------")
+    print(f"   🛡 Active V2Ray: {len(v2ray_configs)}")
+    print(f"   ⚡️ Active MTProto: {len(mtproto_configs)}")
+    print("="*40 + "\n")
+    
     if not active_results:
         return
         
     print("🚀 Starting Parallel Telegram Publishers...")
-
-    v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
-    mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
 
     t1 = threading.Thread(target=publish_v2ray, args=(v2ray_configs,))
     t2 = threading.Thread(target=publish_mtproto, args=(mtproto_configs,))
