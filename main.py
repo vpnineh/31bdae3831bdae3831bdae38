@@ -23,6 +23,11 @@ CHANNEL_V2RAY = '@zVPN24'
 CHANNEL_MTPROTO = '@zProxy24'
 CUSTOM_REMARK_V2RAY = '🚀@zVPN24'
 
+# تنظیمات مربوط به تبلیغات داخل کانفیگ‌ها
+AD_CHANNEL_ID = '@VPNine1'
+# تکرار 7 باره آیدی برای تزریق در لینک‌های VLESS
+VLESS_AD_STRING = AD_CHANNEL_ID * 7 
+
 if not BOT_TOKEN:
     print("❌ BOT_TOKEN is missing! Please set it in GitHub Secrets.")
     exit(1)
@@ -216,7 +221,12 @@ def process_config(raw_config, reader_country, reader_asn):
             if ip and port and check_liveness(ip, port):
                 geo_info = get_location_info_offline(ip, reader_country, reader_asn)
                 if not geo_info: return None
-                    
+                
+                # پاکسازی مقادیر JSON در vmess از آیدی کانال‌های دیگر
+                for k, v in v_data.items():
+                    if isinstance(v, str) and k not in ['id', 'add', 'port']:
+                        v_data[k] = re.sub(r'@[a-zA-Z0-9_]+', AD_CHANNEL_ID, v)
+                        
                 v_data['ps'] = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 new_b64 = base64.b64encode(json.dumps(v_data).encode('utf-8')).decode('utf-8')
                 final_config = f"vmess://{new_b64}"
@@ -232,36 +242,38 @@ def process_config(raw_config, reader_country, reader_asn):
                 if not geo_info: return None
                 
                 # --- URL CLEANUP & BRANDING ---
-                query_params = parse_qsl(parsed.query)
+                query_params = parse_qsl(parsed.query, keep_blank_values=True)
                 final_params = []
                 telegram_added = False
                 
                 for k, v in query_params:
-                    # جایگزینی پارامتر Telegram با آیدی اختصاصی
-                    if k.lower() == 'telegram':
-                        if not telegram_added:
-                            final_params.append(('Telegram', CHANNEL_V2RAY))
-                            telegram_added = True
-                    # پاکسازی تبلیغات از مسیر (path)
-                    elif k.lower() == 'path':
-                        clean_path = re.sub(r'@[a-zA-Z0-9_]+', CHANNEL_V2RAY, v)
-                        final_params.append((k, clean_path))
+                    # جایگزینی هرگونه آیدی کانال (@username) در کلیدها و مقادیر با آیدی شما
+                    clean_k = re.sub(r'@[a-zA-Z0-9_]+', AD_CHANNEL_ID, k)
+                    clean_v = re.sub(r'@[a-zA-Z0-9_]+', AD_CHANNEL_ID, v)
+                    
+                    if clean_k.lower() == 'telegram':
+                        if parsed.scheme == 'vless':
+                            if not telegram_added:
+                                final_params.append(('telegram', VLESS_AD_STRING))
+                                telegram_added = True
+                        # اگر vless نیست، پارامتر تبلیغاتی را کلاً حذف می‌کنیم تا کانفیگ خراب نشود
                     else:
-                        final_params.append((k, v))
+                        final_params.append((clean_k, clean_v))
                 
-                # اضافه کردن تبلیغ کانال شما در صورت نبودن پارامتر
-                if not telegram_added:
-                    final_params.append(('Telegram', CHANNEL_V2RAY))
+                # اگر کانفیگ vless بود و پارامتر telegram را نداشت، ما به آن اضافه می‌کنیم
+                if not telegram_added and parsed.scheme == 'vless':
+                    final_params.append(('telegram', VLESS_AD_STRING))
                 
                 # بازسازی کوئری بدون انکود کردن کاراکتر @
                 new_query = urlencode(final_params, safe='@/')
                 
+                # بازنویسی Remark نهایی
                 new_fragment = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 
-                # ساخت لینک نهایی کاملا سالم
+                # ساخت لینک نهایی کاملاً سالم و دست‌نخورده از نظر ساختاری
                 final_config = urlunparse((
                     parsed.scheme,
-                    parsed.netloc,
+                    parsed.netloc,  # شامل uuid@ip:port (که به دلیل جدا بودن در regex بالا دستکاری نمی‌شود)
                     parsed.path,
                     parsed.params,
                     new_query,
@@ -372,7 +384,7 @@ def publish_v2ray(v2ray_configs):
             for c in chunk:
                 msg += f"<blockquote><code>{c['config']}</code></blockquote>\n\n"
             
-            msg += f"📡 @zVPN24"
+            msg += f"📡 {CHANNEL_V2RAY}"
             
             while True:
                 try:
@@ -403,7 +415,7 @@ def publish_mtproto(mtproto_configs):
         buttons = [InlineKeyboardButton(text=f"Connect {c['geo']['flag']}", url=c['config']) for c in chunk]
         markup.add(*buttons)
         
-        msg = "⚡️ <b>Fast & Active Telegram Proxies</b>\n\n👇 Click the buttons below to connect:\n\n🟢 @zProxy24"
+        msg = f"⚡️ <b>Fast & Active Telegram Proxies</b>\n\n👇 Click the buttons below to connect:\n\n🟢 {CHANNEL_MTPROTO}"
         while True:
             try:
                 bot.send_message(CHANNEL_MTPROTO, msg, reply_markup=markup, parse_mode='HTML')
