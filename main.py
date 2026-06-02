@@ -8,7 +8,7 @@ import re
 import base64
 import threading
 from datetime import datetime, timezone
-from urllib.parse import urlparse, unquote, parse_qs
+from urllib.parse import urlparse, unquote, parse_qs, urlencode, parse_qsl, urlunparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -64,7 +64,6 @@ def append_to_history(filepath, new_hashes, max_lines=40000):
             f.write(h + '\n')
 
 def fix_base64(s):
-    """رفع مشکل پدینگ و کاراکترهای URL-Safe در Base64"""
     s = s.strip().replace('-', '+').replace('_', '/')
     padding = len(s) % 4
     if padding != 0:
@@ -76,7 +75,6 @@ def get_deep_hash(config):
     try:
         if config.startswith("vmess://"):
             b64_str = config.replace("vmess://", "")
-            # استفاده از errors='ignore' برای جلوگیری از کرش به خاطر کاراکترهای نامعتبر
             decoded = base64.b64decode(fix_base64(b64_str)).decode('utf-8', errors='ignore')
             v_data = json.loads(decoded)
             core_str = f"vmess|{v_data.get('add')}:{v_data.get('port')}|{v_data.get('id')}"
@@ -232,9 +230,44 @@ def process_config(raw_config, reader_country, reader_asn):
             if ip and port and check_liveness(ip, port):
                 geo_info = get_location_info_offline(ip, reader_country, reader_asn)
                 if not geo_info: return None
-                    
-                base_uri = config.split('#')[0]
-                final_config = f"{base_uri}#{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
+                
+                # --- URL CLEANUP & BRANDING ---
+                query_params = parse_qsl(parsed.query)
+                final_params = []
+                telegram_added = False
+                
+                for k, v in query_params:
+                    # جایگزینی پارامتر Telegram با آیدی اختصاصی
+                    if k.lower() == 'telegram':
+                        if not telegram_added:
+                            final_params.append(('Telegram', CHANNEL_V2RAY))
+                            telegram_added = True
+                    # پاکسازی تبلیغات از مسیر (path)
+                    elif k.lower() == 'path':
+                        clean_path = re.sub(r'@[a-zA-Z0-9_]+', CHANNEL_V2RAY, v)
+                        final_params.append((k, clean_path))
+                    else:
+                        final_params.append((k, v))
+                
+                # اضافه کردن تبلیغ کانال شما در صورت نبودن پارامتر
+                if not telegram_added:
+                    final_params.append(('Telegram', CHANNEL_V2RAY))
+                
+                # بازسازی کوئری بدون انکود کردن کاراکتر @
+                new_query = urlencode(final_params, safe='@/')
+                
+                new_fragment = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
+                
+                # ساخت لینک نهایی کاملا سالم
+                final_config = urlunparse((
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    parsed.params,
+                    new_query,
+                    new_fragment
+                ))
+                
                 return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
 
         if ip and port and config_type == "MTPROTO" and check_liveness(ip, port):
@@ -395,7 +428,6 @@ def main():
         print("❌ Critical: Offline Geo databases missing!")
         exit(1)
         
-    # کنترل خطای کرش شدن به خاطر دیتابیس خراب (محافظت 100%)
     try:
         reader_country = maxminddb.open_database(COUNTRY_DB_FILE)
         reader_asn = maxminddb.open_database(ASN_DB_FILE)
