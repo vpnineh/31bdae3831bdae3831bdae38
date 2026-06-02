@@ -28,3 +28,4 @@ https://github.com/vpnineh/configs-collector-v2ray/raw/refs/heads/main/sub/count
 https://github.com/vpnineh/configs-collector-v2ray/raw/refs/heads/main/sub/countries/FR.txt
 https://github.com/vpnineh/configs-collector-v2ray/raw/refs/heads/main/sub/countries/FL.txt
 https://github.com/vpnineh/configs-collector-v2ray/raw/refs/heads/main/sub/countries/NL.txt
+https://raw.githubusercontent.com/vpnineh/clash/refs/heads/main/sub/sub
