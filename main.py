@@ -243,26 +243,25 @@ def process_config(raw_config, reader_country, reader_asn):
                 
                 # --- URL CLEANUP & BRANDING ---
                 query_params = parse_qsl(parsed.query, keep_blank_values=True)
-                final_params = []
-                telegram_added = False
+                other_params = []
                 
                 for k, v in query_params:
                     # جایگزینی هرگونه آیدی کانال (@username) در کلیدها و مقادیر با آیدی شما
                     clean_k = re.sub(r'@[a-zA-Z0-9_]+', AD_CHANNEL_ID, k)
                     clean_v = re.sub(r'@[a-zA-Z0-9_]+', AD_CHANNEL_ID, v)
                     
-                    if clean_k.lower() == 'telegram':
-                        if parsed.scheme == 'vless':
-                            if not telegram_added:
-                                final_params.append(('telegram', VLESS_AD_STRING))
-                                telegram_added = True
-                        # اگر vless نیست، پارامتر تبلیغاتی را کلاً حذف می‌کنیم تا کانفیگ خراب نشود
-                    else:
-                        final_params.append((clean_k, clean_v))
+                    # پارامتر Telegram رو کلا از بین بقیه جدا می‌کنیم
+                    if clean_k.lower() != 'telegram':
+                        other_params.append((clean_k, clean_v))
                 
-                # اگر کانفیگ vless بود و پارامتر telegram را نداشت، ما به آن اضافه می‌کنیم
-                if not telegram_added and parsed.scheme == 'vless':
-                    final_params.append(('telegram', VLESS_AD_STRING))
+                final_params = []
+                
+                # تزریق Telegram به عنوان "اولین" پارامتر (دقیقاً بعد از IP و Port) فقط برای vless
+                if parsed.scheme == 'vless':
+                    final_params.append(('Telegram', VLESS_AD_STRING))
+                
+                # حالا بقیه پارامترها رو پشت سرش اضافه می‌کنیم
+                final_params.extend(other_params)
                 
                 # بازسازی کوئری بدون انکود کردن کاراکتر @
                 new_query = urlencode(final_params, safe='@/')
@@ -270,10 +269,10 @@ def process_config(raw_config, reader_country, reader_asn):
                 # بازنویسی Remark نهایی
                 new_fragment = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
                 
-                # ساخت لینک نهایی کاملاً سالم و دست‌نخورده از نظر ساختاری
+                # ساخت لینک نهایی کاملاً سالم
                 final_config = urlunparse((
                     parsed.scheme,
-                    parsed.netloc,  # شامل uuid@ip:port (که به دلیل جدا بودن در regex بالا دستکاری نمی‌شود)
+                    parsed.netloc,  # شامل uuid@ip:port
                     parsed.path,
                     parsed.params,
                     new_query,
