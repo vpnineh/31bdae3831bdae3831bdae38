@@ -20,6 +20,11 @@ https://github.com/mifeng8901/sub/raw/refs/heads/main/2025/3/03-27-08-36.yaml
 @proxyme
 @MTProtoProxies
 @VPNine1
+@AR14N24B
+@singbox1
+@NamazVPN
+@Natrixo
+@SOSkeyNET
 https://t.me/v2ray_configs_pool
 https://raw.githubusercontent.com/vpnineh/v2/refs/heads/main/merged#v2
 https://github.com/VPNforWindowsSub/configs/raw/refs/heads/master/Eternity.txt
