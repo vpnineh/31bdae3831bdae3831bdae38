@@ -261,3 +261,290 @@ def process_config(raw_config, reader_country, reader_asn):
                 # استفاده از safe='/:@?=&,' برای جلوگیری از خرابی مسیر (path) وب‌سوکت
                 new_query = urlencode(final_params, safe='/:@?=&,', quote_via=quote)
                 clean_path = re.sub(r'@[a-zA-Z0-9_]+', AD_CHANNEL_ID, parsed.path)
+                
+                # بازنویسی Remark نهایی
+                new_fragment = f"{CUSTOM_REMARK_V2RAY} | {geo_info['flag']} {geo_info['code']}"
+                
+                # ساخت لینک نهایی کاملاً سالم
+                final_config = urlunparse((
+                    parsed.scheme,
+                    parsed.netloc,  # شامل uuid@ip:port
+                    clean_path,
+                    '',
+                    new_query,
+                    new_fragment
+                ))
+                
+                return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
+
+        if ip and port and config_type == "MTPROTO" and check_liveness(ip, port):
+            geo_info = get_location_info_offline(ip, reader_country, reader_asn)
+            if not geo_info: return None
+            return {"type": config_type, "config": final_config, "geo": geo_info, "ip": ip, "hash": config_hash}
+            
+    except Exception:
+        pass
+    return None
+
+# ==========================================
+# 5. Scrapers
+# ==========================================
+def convert_yaml_sub(link):
+    apis = [
+        f"https://sub.v1.mk/sub?target=v2ray&url={link}",
+        f"https://api.v1.mk/sub?target=v2ray&url={link}",
+        f"https://api.nameless13.com/sub?target=v2ray&url={link}"
+    ]
+    for api in apis:
+        try:
+            r = requests.get(api, timeout=10)
+            if r.status_code == 200:
+                text = r.text.strip()
+                decoded = base64.b64decode(fix_base64(text)).decode('utf-8', errors='ignore')
+                return decoded.splitlines()
+        except:
+            continue
+    return []
+
+def get_raw_configs():
+    configs = []
+    if not os.path.exists(SOURCES_FILE):
+        print(f"❌ '{SOURCES_FILE}' not found!")
+        return []
+        
+    with open(SOURCES_FILE, 'r', encoding='utf-8') as f:
+        raw_sources = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        
+    subs = [s for s in raw_sources if s.startswith('http') and 't.me' not in s]
+    channels = [s.replace('https://t.me/s/', '').replace('https://t.me/', '').replace('@', '').strip() for s in raw_sources if not (s.startswith('http') and 't.me' not in s)]
+            
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    pattern_v2ray = r'(?:vless|vmess|trojan|ss|ssr|tuic|hysteria2?|socks5?)://[^\s"\'<>\n]+'
+    pattern_tg = r'(?:https?://t\.me/(?:proxy|socks)\?[^\s"\'<>\n]+|tg://(?:proxy|socks)\?[^\s"\'<>\n]+)'
+
+    for channel in channels:
+        try:
+            r = requests.get(f"https://t.me/s/{channel}", headers=headers, timeout=15)
+            if r.status_code == 200:
+                # ریشه‌کن کردن تگ‌های مخفی <wbr> تلگرام
+                raw_html = r.text.replace('<wbr>', '').replace('<wbr/>', '')
+                soup = BeautifulSoup(raw_html, 'html.parser')
+                messages = soup.find_all('div', class_=re.compile(r'tgme_widget_message\b'))
+                
+                for widget in messages:
+                    # بررسی تاریخ پست
+                    msg_is_today = False
+                    time_tag = widget.find('time', class_='time')
+                    if time_tag and time_tag.has_attr('datetime'):
+                        if time_tag['datetime'].startswith(today_str):
+                            msg_is_today = True
+                    
+                    if not msg_is_today:
+                        continue
+                    
+                    # استخراج متن کپشن
+                    clean_text = widget.get_text(separator=' ')
+                    clean_text = html.unescape(clean_text)
+                    clean_text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f]', '', clean_text)
+                    
+                    # استخراج لینک‌های دکمه‌های شیشه‌ای
+                    all_urls = []
+                    for a_tag in widget.find_all('a'):
+                        if a_tag.has_attr('href'):
+                            all_urls.append(a_tag['href'])
+                            
+                    # ترکیب تمامی محتوای پیام (کپشن + دکمه‌ها)
+                    combined_data = clean_text + " \n " + " \n ".join(all_urls)
+                    
+                    configs.extend(re.findall(pattern_v2ray, combined_data))
+                    configs.extend(re.findall(pattern_tg, combined_data))
+        except:
+            continue
+            
+    for link in subs:
+        try:
+            r = requests.get(link, timeout=10)
+            if r.status_code == 200:
+                text = r.text.strip()
+                if "proxies:" in text or "port:" in text:
+                    configs.extend(convert_yaml_sub(link))
+                else:
+                    if "://" not in text[:50]:
+                        try:
+                            text = base64.b64decode(fix_base64(text)).decode('utf-8', errors='ignore')
+                        except:
+                            pass
+                    configs.extend(text.splitlines())
+        except:
+            continue
+            
+    return list(set([c.strip() for c in configs if c.strip()]))
+
+# ==========================================
+# 6. Main Engine & Parallel Publishers
+# ==========================================
+def publish_v2ray(v2ray_configs):
+    if not v2ray_configs:
+        return
+        
+    grouped_v2ray = {}
+    for c in v2ray_configs:
+        geo = c['geo']
+        group_key = f"{geo['code']}_{geo['isp']}"
+        if group_key not in grouped_v2ray:
+            grouped_v2ray[group_key] = []
+        grouped_v2ray[group_key].append(c)
+
+    for group_key, configs in grouped_v2ray.items():
+        chunk_size = 10
+        for i in range(0, len(configs), chunk_size):
+            chunk = configs[i:i+chunk_size]
+            geo = chunk[0]['geo']
+            
+            msg = f"📍 <b>Location:</b> {geo['flag']} {geo['loc']}\n\n" \
+                  f"🏢 <b>Datacenter:</b> {geo['isp']}\n\n" \
+                  f"🛡 #V2RAY\n\n"
+            
+            for c in chunk:
+                msg += f"<blockquote><code>{c['config']}</code></blockquote>\n\n"
+            
+            msg += f"📡 {CHANNEL_V2RAY}"
+            
+            while True:
+                try:
+                    bot.send_message(CHANNEL_V2RAY, msg, parse_mode='HTML')
+                    print(f"  👉 Posted Grouped V2Ray [{geo['code']} - {geo['isp']}] ({len(chunk)} configs)")
+                    time.sleep(3.5)
+                    break
+                except ApiTelegramException as e:
+                    if e.error_code == 429:
+                        r = int(e.result_json['parameters']['retry_after'])
+                        print(f"  ⚠️ V2Ray Rate Limit! Sleep {r}s...")
+                        time.sleep(r + 1)
+                    else:
+                        print(f"  ❌ V2Ray Publish Error: {e}")
+                        break
+                except Exception as e:
+                    print(f"  ❌ General V2Ray Publish Error: {e}")
+                    break
+
+def publish_mtproto(mtproto_configs):
+    if not mtproto_configs:
+        return
+        
+    chunks = [mtproto_configs[i:i+4] for i in range(0, len(mtproto_configs), 4)]
+    
+    for idx, chunk in enumerate(chunks, 1):
+        markup = InlineKeyboardMarkup(row_width=2)
+        buttons = [InlineKeyboardButton(text=f"Connect {c['geo']['flag']}", url=c['config']) for c in chunk]
+        markup.add(*buttons)
+        
+        msg = f"⚡️ <b>Fast & Active Telegram Proxies</b>\n\n👇 Click the buttons below to connect:\n\n🟢 {CHANNEL_MTPROTO}"
+        while True:
+            try:
+                bot.send_message(CHANNEL_MTPROTO, msg, reply_markup=markup, parse_mode='HTML')
+                print(f"  👉 Posted Telegram Proxy Chunk [{idx}/{len(chunks)}]")
+                time.sleep(3.5)
+                break
+            except ApiTelegramException as e:
+                if e.error_code == 429:
+                    r = int(e.result_json['parameters']['retry_after'])
+                    print(f"  ⚠️ MTProto Rate Limit! Sleep {r}s...")
+                    time.sleep(r + 1)
+                else: 
+                    print(f"  ❌ MTProto Publish Error: {e}")
+                    break
+            except Exception as e:
+                print(f"  ❌ General MTProto Publish Error: {e}")
+                break
+
+def main():
+    update_offline_geo_dbs()
+    if not os.path.exists(COUNTRY_DB_FILE) or not os.path.exists(ASN_DB_FILE):
+        print("❌ Critical: Offline Geo databases missing!")
+        exit(1)
+        
+    try:
+        reader_country = maxminddb.open_database(COUNTRY_DB_FILE)
+        reader_asn = maxminddb.open_database(ASN_DB_FILE)
+    except Exception as e:
+        print(f"❌ GeoDB corrupted! Deleting to redownload next run. Error: {e}")
+        os.remove(COUNTRY_DB_FILE)
+        os.remove(ASN_DB_FILE)
+        exit(1)
+
+    history = load_history(HISTORY_FILE)
+    print(f"📚 Loaded {len(history)} hashes from deep history.")
+    
+    print("🔄 Scraping sources...")
+    raw_configs = get_raw_configs()
+    
+    new_configs = []
+    for c in raw_configs:
+        h = get_deep_hash(c)
+        if h not in history:
+            new_configs.append(c)
+            history.add(h) 
+            
+    total_new = len(new_configs)
+    new_v2ray_count = sum(1 for c in new_configs if any(c.startswith(p) for p in ["vmess://", "vless://", "trojan://", "ss://", "ssr://", "tuic://", "hysteria2://"]))
+    new_mtp_count = total_new - new_v2ray_count
+    
+    print(f"\n📊 Found {total_new} deeply unique configs:")
+    print(f"   ┣ 🛡 V2Ray: {new_v2ray_count}")
+    print(f"   ┗ ⚡️ MTProto/Socks: {new_mtp_count}")
+    print("⏳ Testing liveness...\n")
+    
+    active_results = []
+    new_active_hashes = []
+    processed_count = 0
+    
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        futures = {executor.submit(process_config, conf, reader_country, reader_asn): conf for conf in new_configs}
+        for future in as_completed(futures):
+            processed_count += 1
+            res = future.result()
+            if res:
+                active_results.append(res)
+                new_active_hashes.append(res['hash']) 
+                print(f"[{processed_count}/{total_new}] ✅ Active: {res['ip']} ({res['geo']['code']} - {res['geo']['isp']})")
+            elif processed_count % 10 == 0 or processed_count == total_new:
+                print(f"[{processed_count}/{total_new}] ⏳ Processing...")
+
+    append_to_history(HISTORY_FILE, new_active_hashes)
+    reader_country.close()
+    reader_asn.close()
+    
+    v2ray_configs = [c for c in active_results if c['type'] == 'V2RAY']
+    mtproto_configs = [c for c in active_results if c['type'] == 'MTPROTO']
+
+    print("\n" + "="*40)
+    print("🎯 FINAL SCRAPE REPORT")
+    print("="*40)
+    print(f"   🔍 Total Unique Found: {total_new}")
+    print(f"   ✅ Total Active (Passed): {len(active_results)}")
+    print("   ----------------------------------")
+    print(f"   🛡 Active V2Ray: {len(v2ray_configs)}")
+    print(f"   ⚡️ Active MTProto: {len(mtproto_configs)}")
+    print("="*40 + "\n")
+    
+    if not active_results:
+        return
+        
+    print("🚀 Starting Parallel Telegram Publishers...")
+
+    t1 = threading.Thread(target=publish_v2ray, args=(v2ray_configs,))
+    t2 = threading.Thread(target=publish_mtproto, args=(mtproto_configs,))
+
+    t1.start()
+    t2.start()
+
+    t1.join()
+    t2.join()
+
+    print("🎉 All operations completed successfully in parallel!")
+
+if __name__ == "__main__":
+    main()
